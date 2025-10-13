@@ -5,12 +5,6 @@ Created on Thu Oct  9 10:24:58 2025
 @author: jhonr
 """
 
-# -*- coding: utf-8 -*-
-"""
-Test suite for verifying the SHEmbedding implementation.
-Run directly or with pytest.
-"""
-
 import numpy as np
 import pyshtools as pysh
 import sys, os
