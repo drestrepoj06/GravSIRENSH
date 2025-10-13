@@ -2,81 +2,62 @@ import pyshtools as pysh
 import pandas as pd
 import numpy as np
 import os
-from joblib import Parallel, delayed
-from tqdm import tqdm
-from tqdm_joblib import tqdm_joblib
 
-# --- PARAMETERS ---
-BATCH_SIZE = 10000
-N_TOTAL = 100000
+LMAX_FULL = 2190     
+LMAX_BASE = 2         
+N_SAMPLES = 5_000_000 
 
-# --- DEFINE PATHS ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(BASE_DIR, "Data")
-
-# ✅ Ensure directories exist (create if missing)
 os.makedirs(DATA_DIR, exist_ok=True)
 
-OUTPUT_FILE = os.path.join(DATA_DIR, "Training.parquet")
+OUTPUT_FILE = os.path.join(DATA_DIR, f"Samples_{LMAX_FULL}_5M.parquet")
 
-print(f"Data directory:      {DATA_DIR}")
-print(f"Final output file:   {OUTPUT_FILE}\n")
-
-# --- LOAD MODELS ---
-clm = pysh.datasets.Earth.EGM2008(lmax=2190)
-clm2 = pysh.datasets.Earth.EGM2008(lmax=2)
+clm_full = pysh.datasets.Earth.EGM2008(lmax=LMAX_FULL)
+clm_low  = pysh.datasets.Earth.EGM2008(lmax=LMAX_BASE)
 
 a = pysh.constants.Earth.wgs84.a.value
 f = pysh.constants.Earth.wgs84.f.value
 
-# --- FUNCTION TO COMPUTE ONE BATCH ---
-def compute_batch(batch_idx, batch_size=BATCH_SIZE):
-    lons = np.random.uniform(0, 360, batch_size)
-    lats = np.degrees(np.arcsin(np.random.uniform(-1, 1, batch_size)))
-    # r = np.full_like(lats, clm.r0)
+res_full = clm_full.expand(a=a, f=f, lmax=LMAX_FULL)
+res_low  = clm_low.expand(a=a, f=f, lmax=LMAX_FULL, lmax_calc=LMAX_BASE)
 
-    results_2190 = clm.expand(lat=lats, lon=lons, a=a, f=f)
-    results_2 = clm2.expand(lat=lats, lon=lons, a=a, f=f)
+V_full = res_full.pot.data
+V_low  = res_low.pot.data
+dV = V_full - V_low
 
-    g_r     = (results_2190[:, 0] - results_2[:, 0]) * 1e5
-    g_theta = (results_2190[:, 1] - results_2[:, 1]) * 1e5
-    g_phi   = (results_2190[:, 2] - results_2[:, 2]) * 1e5
+gr_full     = res_full.rad.data     * 1e5
+gtheta_full = res_full.theta.data   * 1e5
+gphi_full   = res_full.phi.data     * 1e5
+gtotal_full = res_full.total.data   * 1e5
 
-    df = pd.DataFrame({
-        'lat': lats,
-        'lon': lons,
-        'g_r_mGal': g_r.astype('float32'),
-        'g_theta_mGal': g_theta.astype('float32'),
-        'g_phi_mGal': g_phi.astype('float32'),
-    })
+gr_low     = res_low.rad.data     * 1e5
+gtheta_low = res_low.theta.data   * 1e5
+gphi_low   = res_low.phi.data     * 1e5
+gtotal_low = res_low.total.data   * 1e5
 
-    batch_file = os.path.join(DATA_DIR, f"gravity_batch_{batch_idx:03d}.parquet")
-    df.to_parquet(batch_file, index=False)
-    return batch_file
+dg_r     = gr_full - gr_low
+dg_theta = gtheta_full - gtheta_low
+dg_phi   = gphi_full - gphi_low
+dg_total = np.sqrt(dg_r**2 + dg_theta**2 + dg_phi**2)
 
+lats = res_full.pot.lats()
+lons = res_full.pot.lons()
 
-# --- PARALLEL BATCH EXECUTION ---
-n_batches = N_TOTAL // BATCH_SIZE
-print(f"Generating {N_TOTAL:,} samples in {n_batches} batches of {BATCH_SIZE:,} each...\n")
+lat_grid = np.repeat(lats, len(lons))
+lon_grid = np.tile(lons, len(lats))
 
-with tqdm_joblib(tqdm(desc="Processing batches", total=n_batches)):
-    batch_files = Parallel(n_jobs=os.cpu_count())(
-        delayed(compute_batch)(i) for i in range(n_batches)
-    )
+df = pd.DataFrame({
+    "lat": lat_grid.astype("float32"),
+    "lon": lon_grid.astype("float32"),
+    "dV_m2_s2": dV.flatten().astype("float32"),
+    "dg_r_mGal": dg_r.flatten().astype("float32"),
+    "dg_theta_mGal": dg_theta.flatten().astype("float32"),
+    "dg_phi_mGal": dg_phi.flatten().astype("float32"),
+    "dg_total_mGal": dg_total.flatten().astype("float32"),
+})
 
-# --- MERGE ALL BATCHES ---
-print("\nMerging batches into single dataset...")
-df_list = [pd.read_parquet(f) for f in batch_files]
-df = pd.concat(df_list, ignore_index=True)
-
-df['g_total_mGal'] = np.sqrt(
-    df['g_r_mGal']**2 + df['g_theta_mGal']**2 + df['g_phi_mGal']**2
-)
+if len(df) > N_SAMPLES:
+    df = df.sample(n=N_SAMPLES, random_state=42).reset_index(drop=True)
 
 df.to_parquet(OUTPUT_FILE, index=False)
-print(f"✅ Saved full dataset to: {OUTPUT_FILE}")
-
-# --- CLEAN-UP ---
-for f in batch_files:
-    os.remove(f)
-print("🧹 Temporary batch files removed.")
