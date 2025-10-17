@@ -1,7 +1,6 @@
-# -*- coding: utf-8 -*-
 """
-Created on Tue Oct  7 10:11:58 2025
-@author: jhonr
+Plotting the training perturbations data
+jhonr
 """
 
 import matplotlib.pyplot as plt
@@ -12,8 +11,11 @@ import pandas as pd
 import os
 
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-data_path = os.path.join(base_dir, 'Data', 'Samples_2190_5M.parquet')
+data_path = os.path.join(base_dir, 'Data', 'Samples_2190_5M_r0_complete.parquet')
 
+outputs_dir = os.path.join(base_dir, "Outputs")
+figures_dir = os.path.join(outputs_dir, "Figures")
+os.makedirs(figures_dir, exist_ok=True)
 
 sample_df = pd.read_parquet(data_path)
 
@@ -34,7 +36,6 @@ fig, ax = plt.subplots(figsize=(13, 6), subplot_kw={'projection': proj})
 ax.set_global()
 
 gl = ax.gridlines(draw_labels=True, linewidth=0, color='none')
-
 gl.top_labels = False
 gl.right_labels = False
 gl.bottom_labels = True
@@ -52,4 +53,9 @@ cbar.set_label('mGal')
 ax.set_title('2190-2 (EGM2008, Pacific-centered)', fontsize=13, pad=12)
 
 plt.tight_layout()
+
+figure_path = os.path.join(figures_dir, "Training_perturbations.png")
+plt.savefig(figure_path, dpi=300, bbox_inches='tight')
+print(f"Figure saved to: {figure_path}")
+
 plt.show()
