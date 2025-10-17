@@ -1,9 +1,5 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Thu Oct  9 14:33:01 2025
-
-@author: jhonr
-"""
+"""Standard implementation of a SIRENNET
+jhonr"""
 
 # From https://github.com/vsitzmann/siren/blob/master/explore_siren.ipynb
 from torch import nn
