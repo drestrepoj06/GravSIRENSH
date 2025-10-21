@@ -9,7 +9,8 @@ from SRC.Models.SH_embedding import SphericalHarmonics
 from SRC.Models.Siren import SIRENNet
 import numpy as np
 
-# Scaling on potential, based on the code https://github.com/MartinAstro/GravNN/blob/master/GravNN/Networks/Data.py Line 91
+# Scaling potential outputs in the range [-1, 1],
+# based on the code https://github.com/MartinAstro/GravNN/blob/master/GravNN/Networks/Data.py Line 91
 # And https://github.com/MartinAstro/GravNN/blob/5debb42013097944c0398fe5b570d7cd9ebd43bd/GravNN/Preprocessors/UniformScaler.py
 
 class SHSirenScaler:
