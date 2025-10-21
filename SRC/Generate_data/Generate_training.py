@@ -16,7 +16,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fil
 DATA_DIR = os.path.join(BASE_DIR, "Data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
-OUTPUT_FILE = os.path.join(DATA_DIR, f"Samples_{LMAX_FULL}_5M_r0_complete.parquet")
+OUTPUT_FILE = os.path.join(DATA_DIR, f"Samples_{LMAX_FULL}_5M_r0.parquet")
 
 clm_full = pysh.datasets.Earth.EGM2008(lmax=LMAX_FULL)
 clm_low  = pysh.datasets.Earth.EGM2008(lmax=LMAX_BASE)

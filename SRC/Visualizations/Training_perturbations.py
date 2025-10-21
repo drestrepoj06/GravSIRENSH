@@ -11,7 +11,7 @@ import pandas as pd
 import os
 
 base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-data_path = os.path.join(base_dir, 'Data', 'Samples_2190_5M_r0_complete.parquet')
+data_path = os.path.join(base_dir, 'Data', 'Samples_2190_5M_r0.parquet')
 
 outputs_dir = os.path.join(base_dir, "Outputs")
 figures_dir = os.path.join(outputs_dir, "Figures")
