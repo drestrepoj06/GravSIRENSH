@@ -8,7 +8,6 @@ import pyshtools as pysh
 import pandas as pd
 import numpy as np
 
-
 LMAX_FULL = 2190
 LMAX_BASE = 2
 N_SAMPLES = 5_000_000
@@ -87,14 +86,14 @@ df = pd.DataFrame({
     "V_full_m2_s2": pot_full.ravel().astype("float32"),
     "V_low_m2_s2": pot_low.ravel().astype("float32"),
     "dV_m2_s2": dV.ravel().astype("float32"),
-    "gr_full_mGal": (gr_full.ravel() * 1e5).astype("float32"),
-    "gr_low_mGal": (gr_low.ravel() * 1e5).astype("float32"),
+    "gr_full_mGal": (gr_full.ravel()).astype("float32"),
+    "gr_low_mGal": (gr_low.ravel()).astype("float32"),
     "dg_r_mGal": dg_r.ravel().astype("float32"),
-    "gtheta_full_mGal": (gtheta_full.ravel() * 1e5).astype("float32"),
-    "gtheta_low_mGal": (gtheta_low.ravel() * 1e5).astype("float32"),
+    "gtheta_full_mGal": (gtheta_full.ravel()).astype("float32"),
+    "gtheta_low_mGal": (gtheta_low.ravel()).astype("float32"),
     "dg_theta_mGal": dg_theta.ravel().astype("float32"),
-    "gphi_full_mGal": (gphi_full.ravel() * 1e5).astype("float32"),
-    "gphi_low_mGal": (gphi_low.ravel() * 1e5).astype("float32"),
+    "gphi_full_mGal": (gphi_full.ravel()).astype("float32"),
+    "gphi_low_mGal": (gphi_low.ravel()).astype("float32"),
     "dg_phi_mGal": dg_phi.ravel().astype("float32"),
     "dg_total_mGal": dg_total.ravel().astype("float32"),
     "radius_m": np.full(pot_full.size, r0, dtype="float32")

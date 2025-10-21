@@ -1,8 +1,20 @@
+# ============================================================
+# IMPORTANT:
+# This environment must be created with Conda because
+# 'pyshtools' requires compiled Fortran extensions not
+# available via pip on Windows.
+#
+# Create environment with:
+#   conda env create -f environment.yml
+#
+# Do NOT use:
+#   pip install -r requirements.txt
+# ============================================================
+
 pyshtools==4.12.2
 pandas==2.3.3
 numpy==2.2.6
 matplotlib==3.10.6
-scipy==1.15.2
 cartopy==0.25.0
 torch==2.3.1
 scikit-learn==1.7.2
