@@ -1,33 +1,35 @@
-"""Training of the SIRENSH network
-jhonr"""
-
 import os
 import sys
 import torch
 import torch.nn as nn
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import DataLoader, TensorDataset
 import pandas as pd
 import time
-from sklearn.model_selection import train_test_split
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from SRC.Models.SH_siren import SH_SIREN, SHSirenScaler
+from SRC.Models.SH_embedding import SHEmbedding
 
 
 def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    data_path = os.path.join(base_dir, 'Data', 'Samples_2190_5M_r0_complete.parquet')
+    data_path = os.path.join(base_dir, 'Data', 'Samples_2190_5M_r0.parquet')
+    cache_path = os.path.join(base_dir, 'Data', 'cache_basis.npy')
 
+    print("📂 Loading dataset...")
     df = pd.read_parquet(data_path)
-    df = df.sample(n=500000, random_state=42).reset_index(drop=True)
 
-    train_df, temp_df = train_test_split(df, test_size=0.2, random_state=42)
-    val_df, test_df   = train_test_split(temp_df, test_size=0.5, random_state=42)
+    # Keep only validation set of 500k samples (train = rest)
+    val_df = df.sample(n=500000, random_state=42)
+    train_df = df.drop(val_df.index).reset_index(drop=True)
+    val_df = val_df.reset_index(drop=True)
+
+    print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     scaler = SHSirenScaler(r_scale=6378136.3)
     scaler.fit_potential(train_df["V_full_m2_s2"].values)
 
-    for subdf in [train_df, val_df, test_df]:
+    for subdf in [train_df, val_df]:
         subdf["V_full_scaled"] = scaler.scale_potential(subdf["V_full_m2_s2"].values)
         _, _, r_scaled = scaler.scale_inputs(
             torch.tensor(subdf["lon"].values),
@@ -37,8 +39,10 @@ def main():
         subdf["radius_bar"] = r_scaled.numpy()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"🧠 Using device: {device}")
 
     def df_to_tensors(df):
+        # The new SH_SIREN loads lon/lat directly, so we still return them
         lon = torch.tensor(df["lon"].values, dtype=torch.float32)
         lat = torch.tensor(df["lat"].values, dtype=torch.float32)
         r   = torch.tensor(df["radius_m"].values, dtype=torch.float32)
@@ -46,27 +50,21 @@ def main():
         return lon, lat, r, y
 
     lon_train, lat_train, r_train, y_train = df_to_tensors(train_df)
-    lon_val, lat_val, r_val, y_val         = df_to_tensors(val_df)
+    lon_val,   lat_val,   r_val,   y_val   = df_to_tensors(val_df)
 
-    train_dataset = TensorDataset(lon_train, lat_train, r_train, y_train)
-    val_dataset   = TensorDataset(lon_val,   lat_val,   r_val,   y_val)
-
-    # num_workers = max(1, os.cpu_count() // 2) uncomment in GPU
     train_loader = DataLoader(
-        train_dataset,
-        batch_size=1024,
+        TensorDataset(lon_train, lat_train, r_train, y_train),
+        batch_size=10240,
         shuffle=True,
         num_workers=0,
         pin_memory=torch.cuda.is_available(),
-        #persistent_workers=True
     )
     val_loader = DataLoader(
-        val_dataset,
-        batch_size=1024,
+        TensorDataset(lon_val, lat_val, r_val, y_val),
+        batch_size=10240,
         shuffle=False,
         num_workers=0,
         pin_memory=torch.cuda.is_available(),
-        #persistent_workers=True
     )
 
     model = SH_SIREN(
@@ -78,7 +76,7 @@ def main():
         hidden_omega_0=1.0,
         device=device,
         scaler=scaler,
-        normalize_input=True
+        cache_path=cache_path,
     )
 
     criterion = nn.MSELoss()
@@ -91,14 +89,18 @@ def main():
         train_loss = 0.0
 
         for lon_b, lat_b, r_b, y_b in train_loader:
-            lon_b = lon_b.to(device)
-            lat_b = lat_b.to(device)
-            r_b   = r_b.to(device)
-            y_b   = y_b.to(device)
+            batch_df = pd.DataFrame({
+                "lon": lon_b.numpy(),
+                "lat": lat_b.numpy(),
+                "radius_m": r_b.numpy(),
+                "V_full_scaled": y_b.squeeze().numpy(),
+            })
+
+            y_true = y_b.to(device)
+            y_pred = model(df=batch_df)
+            loss = criterion(y_pred, y_true)
 
             optimizer.zero_grad()
-            y_pred = model(lon_b, lat_b, r_b)
-            loss = criterion(y_pred, y_b)
             loss.backward()
             optimizer.step()
             train_loss += loss.item()
@@ -109,12 +111,15 @@ def main():
         val_loss = 0.0
         with torch.no_grad():
             for lon_b, lat_b, r_b, y_b in val_loader:
-                lon_b = lon_b.to(device)
-                lat_b = lat_b.to(device)
-                r_b   = r_b.to(device)
-                y_b   = y_b.to(device)
-                y_pred = model(lon_b, lat_b, r_b)
-                val_loss += criterion(y_pred, y_b).item()
+                batch_df = pd.DataFrame({
+                    "lon": lon_b.numpy(),
+                    "lat": lat_b.numpy(),
+                    "radius_m": r_b.numpy(),
+                    "V_full_scaled": y_b.squeeze().numpy(),
+                })
+                y_true = y_b.to(device)
+                y_pred = model(df=batch_df)
+                val_loss += criterion(y_pred, y_true).item()
 
         avg_val_loss = val_loss / len(val_loader)
         epoch_time = time.time() - epoch_start
