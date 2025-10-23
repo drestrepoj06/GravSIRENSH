@@ -152,8 +152,7 @@ def main():
         "scaler": {
             "r_scale": scaler.r_scale,
             "U_min": scaler.U_min,
-            "U_max": scaler.U_max,
-            "a_scale": scaler.a_scale,
+            "U_max": scaler.U_max
         },
     }, save_path)
 
@@ -169,8 +168,7 @@ def main():
         "scaler": {
             "r_scale": float(scaler.r_scale),
             "U_min": float(scaler.U_min),
-            "U_max": float(scaler.U_max),
-            "a_scale": float(scaler.a_scale),
+            "U_max": float(scaler.U_max)
         },
         "training": {
             "epochs": epochs,
