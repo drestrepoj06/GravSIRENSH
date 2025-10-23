@@ -76,19 +76,24 @@ def main():
         num_workers=0,
         pin_memory=torch.cuda.is_available(),
     )
+    lmax = 2
+    hidden_features = 128
+    hidden_layers = 4
+    out_features = 1
+    first_omega_0 = 20
+    hidden_omega_0 = 1.0
 
     model = SH_SIREN(
-        lmax=2,
-        hidden_features=128,
-        hidden_layers=4,
-        out_features=1,
-        first_omega_0=20,
-        hidden_omega_0=1.0,
+        lmax=lmax,
+        hidden_features=hidden_features,
+        hidden_layers=hidden_layers,
+        out_features=out_features,
+        first_omega_0=first_omega_0,
+        hidden_omega_0=hidden_omega_0,
         device=device,
         scaler=scaler,
         cache_path=cache_path,
     )
-
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
@@ -159,8 +164,8 @@ def main():
     os.makedirs(save_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     save_path = os.path.join(save_dir, f"sh_siren_lmax{model.lmax}_{timestamp}.pth")
-    np.save(os.path.join(save_dir, "train_losses.npy"), np.array(train_losses))
-    np.save(os.path.join(save_dir, "val_losses.npy"), np.array(val_losses))
+    np.save(os.path.join(save_dir, f"sh_siren_lmax{model.lmax}_{timestamp}_train_losses.npy"), np.array(train_losses))
+    np.save(os.path.join(save_dir, f"sh_siren_lmax{model.lmax}_{timestamp}_val_losses.npy"), np.array(val_losses))
 
     torch.save({
         "state_dict": model.state_dict(),
@@ -174,16 +179,16 @@ def main():
     config = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "device": str(device),
-        "lmax": model.lmax,
-        "hidden_features": model.siren.hidden_features,
-        "hidden_layers": model.siren.hidden_layers,
-        "out_features": model.siren.out_features,
-        "first_omega_0": model.siren.first_omega_0,
-        "hidden_omega_0": model.siren.hidden_omega_0,
+        "lmax": lmax,
+        "hidden_features": hidden_features,
+        "hidden_layers": hidden_layers,
+        "out_features": out_features,
+        "first_omega_0": first_omega_0,
+        "hidden_omega_0": hidden_omega_0,
         "scaler": {
-            "r_scale": scaler.r_scale,
-            "a_min": scaler.a_min,
-            "a_max": scaler.a_max,
+            "r_scale": float(scaler.r_scale),
+            "a_min": float(scaler.a_min),
+            "a_max": float(scaler.a_max),
         },
         "training": {
             "epochs": epochs,
@@ -199,9 +204,9 @@ def main():
         }
     }
 
-    config_path = os.path.join(save_dir, "model_config.json")
+    config_path = os.path.join(save_dir, f"sh_siren_lmax{model.lmax}_{timestamp}_model_config.json")
     with open(config_path, "w") as f:
-        json.dump(config, f, indent=4)
+        json.dump(config, f, indent=4, default=lambda o: float(o) if hasattr(o, "item") else str(o))
 
     print(f"✅ Model configuration saved to: {config_path}")
 
