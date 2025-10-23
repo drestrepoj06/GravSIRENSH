@@ -6,6 +6,8 @@ from torch.utils.data import DataLoader, TensorDataset
 import pandas as pd
 import time
 import numpy as np
+from datetime import datetime
+import json
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from SRC.Location_encoder.SH_siren import SH_SIREN, SHSirenScaler
@@ -155,7 +157,8 @@ def main():
     outputs_dir = os.path.join(base_dir, "Outputs")
     save_dir = os.path.join(outputs_dir, "Models")
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, 'sh_siren_trained.pth')
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_path = os.path.join(save_dir, f"sh_siren_lmax{model.lmax}_{timestamp}.pth")
     np.save(os.path.join(save_dir, "train_losses.npy"), np.array(train_losses))
     np.save(os.path.join(save_dir, "val_losses.npy"), np.array(val_losses))
 
@@ -168,7 +171,39 @@ def main():
         },
     }, save_path)
 
-    print(f"✅ Model and scaler saved to: {save_path}")
+    config = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "device": str(device),
+        "lmax": model.lmax,
+        "hidden_features": model.siren.hidden_features,
+        "hidden_layers": model.siren.hidden_layers,
+        "out_features": model.siren.out_features,
+        "first_omega_0": model.siren.first_omega_0,
+        "hidden_omega_0": model.siren.hidden_omega_0,
+        "scaler": {
+            "r_scale": scaler.r_scale,
+            "a_min": scaler.a_min,
+            "a_max": scaler.a_max,
+        },
+        "training": {
+            "epochs": epochs,
+            "train_samples": len(train_df),
+            "val_samples": len(val_df),
+            "final_train_loss": float(train_losses[-1]),
+            "final_val_loss": float(val_losses[-1]),
+        },
+        "paths": {
+            "model_file": save_path,
+            "train_losses": os.path.join(save_dir, "train_losses.npy"),
+            "val_losses": os.path.join(save_dir, "val_losses.npy"),
+        }
+    }
+
+    config_path = os.path.join(save_dir, "model_config.json")
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=4)
+
+    print(f"✅ Model configuration saved to: {config_path}")
 
 
 if __name__ == "__main__":
