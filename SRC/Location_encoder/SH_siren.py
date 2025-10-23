@@ -5,8 +5,8 @@ jhonr
 
 import torch
 import torch.nn as nn
-from SRC.Models.SH_embedding import SHEmbedding
-from SRC.Models.Siren import SIRENNet
+from SRC.Location_encoder.SH_embedding import SHEmbedding
+from SRC.Location_encoder.Siren import SIRENNet
 import numpy as np
 import os
 import pandas as pd

@@ -8,7 +8,7 @@ import time
 import numpy as np
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.Models.SH_siren import SH_SIREN, SHSirenScaler
+from SRC.Location_encoder.SH_siren import SH_SIREN, SHSirenScaler
 # from SRC.Models.SH_embedding import SHEmbedding
 
 
