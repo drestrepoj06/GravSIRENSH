@@ -8,6 +8,7 @@ import pyshtools as pysh
 import pandas as pd
 import numpy as np
 
+
 LMAX_FULL = 2190
 LMAX_BASE = 2
 N_SAMPLES = 5_000_000
@@ -30,8 +31,8 @@ deg_low  = np.arange(LMAX_BASE + 1)
 scale_V_full = (r0 / r1) ** deg_full
 scale_V_low  = (r0 / r1) ** deg_low
 
-scale_g_full = (r0 / r1) ** (deg_full + 2)
-scale_g_low  = (r0 / r1) ** (deg_low + 2)
+scale_g_full = (r0 / r1) ** (deg_full + 1)
+scale_g_low  = (r0 / r1) ** (deg_low + 1)
 
 scale_V_full_3d = scale_V_full[np.newaxis, :, np.newaxis]
 scale_V_low_3d  = scale_V_low[np.newaxis, :, np.newaxis]
