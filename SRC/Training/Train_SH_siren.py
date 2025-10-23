@@ -5,10 +5,11 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 import pandas as pd
 import time
+import numpy as np
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from SRC.Models.SH_siren import SH_SIREN, SHSirenScaler
-from SRC.Models.SH_embedding import SHEmbedding
+# from SRC.Models.SH_embedding import SHEmbedding
 
 
 def main():
@@ -18,19 +19,20 @@ def main():
 
     print("📂 Loading dataset...")
     df = pd.read_parquet(data_path)
+    df["orig_index"] = np.arange(len(df))
 
     # Keep only validation set of 500k samples (train = rest)
     val_df = df.sample(n=500000, random_state=42)
-    train_df = df.drop(val_df.index).reset_index(drop=True)
-    val_df = val_df.reset_index(drop=True)
+    train_df = df.drop(val_df.index)
 
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
+    # --- Scaler: only radius normalization now ---
     scaler = SHSirenScaler(r_scale=6378136.3)
-    scaler.fit_potential(train_df["V_full_m2_s2"].values)
+    scaler.fit_acceleration(train_df["dg_total_mGal"].values.reshape(-1, 1))
 
+    # --- Apply radius scaling ---
     for subdf in [train_df, val_df]:
-        subdf["V_full_scaled"] = scaler.scale_potential(subdf["V_full_m2_s2"].values)
         _, _, r_scaled = scaler.scale_inputs(
             torch.tensor(subdf["lon"].values),
             torch.tensor(subdf["lat"].values),
@@ -42,25 +44,33 @@ def main():
     print(f"🧠 Using device: {device}")
 
     def df_to_tensors(df):
-        # The new SH_SIREN loads lon/lat directly, so we still return them
         lon = torch.tensor(df["lon"].values, dtype=torch.float32)
         lat = torch.tensor(df["lat"].values, dtype=torch.float32)
-        r   = torch.tensor(df["radius_m"].values, dtype=torch.float32)
-        y   = torch.tensor(df["V_full_scaled"].values, dtype=torch.float32).unsqueeze(1)
-        return lon, lat, r, y
+        r = torch.tensor(df["radius_m"].values, dtype=torch.float32)
+        idx = torch.tensor(df["orig_index"].values, dtype=torch.long)
 
-    lon_train, lat_train, r_train, y_train = df_to_tensors(train_df)
-    lon_val,   lat_val,   r_val,   y_val   = df_to_tensors(val_df)
+        # Use dg_total_mGal as scalar target
+        a_np = df["dg_total_mGal"].values.reshape(-1, 1)
+
+        # Scale to [-1, 1]
+        a_scaled = scaler.scale_acceleration(a_np)
+
+        y = torch.tensor(a_scaled, dtype=torch.float32)
+        return lon, lat, r, idx, y
+
+    lon_train, lat_train, r_train, idx_train, y_train = df_to_tensors(train_df)
+    lon_val, lat_val, r_val, idx_val, y_val = df_to_tensors(val_df)
 
     train_loader = DataLoader(
-        TensorDataset(lon_train, lat_train, r_train, y_train),
+        TensorDataset(lon_train, lat_train, r_train, idx_train, y_train),  # ✅ include idx
         batch_size=10240,
         shuffle=True,
         num_workers=0,
         pin_memory=torch.cuda.is_available(),
     )
+
     val_loader = DataLoader(
-        TensorDataset(lon_val, lat_val, r_val, y_val),
+        TensorDataset(lon_val, lat_val, r_val, idx_val, y_val),  # ✅ include idx
         batch_size=10240,
         shuffle=False,
         num_workers=0,
@@ -71,7 +81,7 @@ def main():
         lmax=10,
         hidden_features=128,
         hidden_layers=4,
-        out_features=1,
+        out_features=1,  # three acceleration components
         first_omega_0=20,
         hidden_omega_0=1.0,
         device=device,
@@ -88,12 +98,12 @@ def main():
         model.train()
         train_loss = 0.0
 
-        for lon_b, lat_b, r_b, y_b in train_loader:
+        for lon_b, lat_b, r_b, idx_b, y_b in train_loader:
             batch_df = pd.DataFrame({
                 "lon": lon_b.numpy(),
                 "lat": lat_b.numpy(),
                 "radius_m": r_b.numpy(),
-                "V_full_scaled": y_b.squeeze().numpy(),
+                "orig_index": idx_b.numpy(),
             })
 
             y_true = y_b.to(device)
@@ -110,12 +120,12 @@ def main():
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            for lon_b, lat_b, r_b, y_b in val_loader:
+            for lon_b, lat_b, r_b, idx_b, y_b in val_loader:
                 batch_df = pd.DataFrame({
                     "lon": lon_b.numpy(),
                     "lat": lat_b.numpy(),
                     "radius_m": r_b.numpy(),
-                    "V_full_scaled": y_b.squeeze().numpy(),
+                    "orig_index": idx_b.numpy(),
                 })
                 y_true = y_b.to(device)
                 y_pred = model(df=batch_df)
@@ -134,9 +144,8 @@ def main():
         "state_dict": model.state_dict(),
         "scaler": {
             "r_scale": scaler.r_scale,
-            "U_min": scaler.U_min,
-            "U_max": scaler.U_max,
-            "a_scale": scaler.a_scale,
+            "a_min": scaler.a_min,
+            "a_max": scaler.a_max,
         },
     }, save_path)
 
