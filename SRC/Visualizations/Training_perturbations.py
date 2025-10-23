@@ -50,7 +50,7 @@ im = ax.pcolormesh(
 
 cbar = plt.colorbar(im, ax=ax, orientation='horizontal', pad=0.04, aspect=50)
 cbar.set_label('mGal')
-ax.set_title('2190-2 (EGM2008, Pacific-centered)', fontsize=13, pad=12)
+ax.set_title('2190-2 (EGM2008)', fontsize=13, pad=12)
 
 plt.tight_layout()
 

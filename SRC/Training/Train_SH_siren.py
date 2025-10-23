@@ -152,13 +152,12 @@ def main():
               f"Val: {avg_val_loss:.6f} | "
               f"Time: {epoch_time:.1f}s")
 
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    save_dir = os.path.join(base_dir, 'SRC', 'Models')
-    np.save(os.path.join(save_dir, "train_losses.npy"), np.array(train_losses))
-    np.save(os.path.join(save_dir, "val_losses.npy"), np.array(val_losses))
-    save_dir = os.path.join(base_dir, 'SRC', 'Models')
+    outputs_dir = os.path.join(base_dir, "Outputs")
+    save_dir = os.path.join(outputs_dir, "Models")
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, 'sh_siren_trained.pth')
+    np.save(os.path.join(save_dir, "train_losses.npy"), np.array(train_losses))
+    np.save(os.path.join(save_dir, "val_losses.npy"), np.array(val_losses))
 
     torch.save({
         "state_dict": model.state_dict(),
