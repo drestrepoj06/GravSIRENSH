@@ -5,8 +5,8 @@ jhonr
 
 import torch
 import torch.nn as nn
-from SRC.Models.SH_embedding import SphericalHarmonics
-from SRC.Models.Siren import SIRENNet
+from SRC.Location_encoder.SH_embedding import SphericalHarmonics
+from SRC.Location_encoder.Siren import SIRENNet
 import numpy as np
 
 # Scaling on potential, based on the code https://github.com/MartinAstro/GravNN/blob/master/GravNN/Networks/Data.py Line 91

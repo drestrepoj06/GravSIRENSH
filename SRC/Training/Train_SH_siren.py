@@ -9,9 +9,12 @@ from torch.utils.data import TensorDataset, DataLoader
 import pandas as pd
 import time
 from sklearn.model_selection import train_test_split
+import numpy as np
+from datetime import datetime
+import json
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.Models.SH_siren import SH_SIREN, SHSirenScaler
+from SRC.Location_encoder.SH_siren import SH_SIREN, SHSirenScaler
 
 
 def main():
@@ -73,22 +76,30 @@ def main():
         # persistent_workers=True
     )
 
+    lmax = 2
+    hidden_features = 128
+    hidden_layers = 4
+    out_features = 1
+    first_omega_0 = 20
+    hidden_omega_0 = 1.0
+
     model = SH_SIREN(
-        lmax=20,
-        hidden_features=128,
-        hidden_layers=4,
-        out_features=1,
-        first_omega_0=20,
-        hidden_omega_0=1.0,
+        lmax=lmax,
+        hidden_features=hidden_features,
+        hidden_layers=hidden_layers,
+        out_features=out_features,
+        first_omega_0=first_omega_0,
+        hidden_omega_0=hidden_omega_0,
         device=device,
-        scaler=scaler,
-        normalize_input=True
+        scaler=scaler
     )
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
     epochs = 1
+    train_losses = []
+    val_losses = []
     for epoch in range(epochs):
         epoch_start = time.time()
         model.train()
@@ -121,14 +132,20 @@ def main():
                 val_loss += criterion(y_pred, y_b).item()
 
         avg_val_loss = val_loss / len(val_loader)
+        train_losses.append(avg_train_loss)
+        val_losses.append(avg_val_loss)
         epoch_time = time.time() - epoch_start
 
         print(
             f"Epoch [{epoch + 1}/{epochs}] - Train: {avg_train_loss:.6f} | Val: {avg_val_loss:.6f} | Time: {epoch_time:.1f}s")
 
-    save_dir = os.path.join(base_dir, 'SRC', 'Models')
+    outputs_dir = os.path.join(base_dir, "Outputs")
+    save_dir = os.path.join(outputs_dir, "Models")
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, 'sh_siren_trained.pth')
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_path = os.path.join(save_dir, f"sh_siren_lmax_torch_{lmax}_{timestamp}.pth")
+    np.save(os.path.join(save_dir, f"sh_siren_lmax_torch_{lmax}_{timestamp}_train_losses.npy"), np.array(train_losses))
+    np.save(os.path.join(save_dir, f"sh_siren_lmax_torch_{lmax}_{timestamp}_val_losses.npy"), np.array(val_losses))
 
     torch.save({
         "state_dict": model.state_dict(),
@@ -140,7 +157,40 @@ def main():
         },
     }, save_path)
 
-    print(f"✅ Model and scaler saved to: {save_path}")
+    config = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "device": str(device),
+        "lmax": lmax,
+        "hidden_features": hidden_features,
+        "hidden_layers": hidden_layers,
+        "out_features": out_features,
+        "first_omega_0": first_omega_0,
+        "hidden_omega_0": hidden_omega_0,
+        "scaler": {
+            "r_scale": float(scaler.r_scale),
+            "U_min": float(scaler.U_min),
+            "U_max": float(scaler.U_max),
+            "a_scale": float(scaler.a_scale),
+        },
+        "training": {
+            "epochs": epochs,
+            "train_samples": len(train_df),
+            "val_samples": len(val_df),
+            "final_train_loss": float(train_losses[-1]),
+            "final_val_loss": float(val_losses[-1]),
+        },
+        "paths": {
+            "model_file": save_path,
+            "train_losses": os.path.join(save_dir, "train_losses.npy"),
+            "val_losses": os.path.join(save_dir, "val_losses.npy"),
+        }
+    }
+
+    config_path = os.path.join(save_dir, f"sh_siren_lmax_torch_{lmax}_{timestamp}_model_config.json")
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=4, default=lambda o: float(o) if hasattr(o, "item") else str(o))
+
+    print(f"✅ Model configuration saved to: {config_path}")
 
 
 if __name__ == "__main__":
