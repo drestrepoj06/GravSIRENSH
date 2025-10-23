@@ -27,11 +27,9 @@ def main():
 
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
-    # --- Scaler: only radius normalization now ---
     scaler = SHSirenScaler(r_scale=6378136.3)
     scaler.fit_acceleration(train_df["dg_total_mGal"].values.reshape(-1, 1))
 
-    # --- Apply radius scaling ---
     for subdf in [train_df, val_df]:
         _, _, r_scaled = scaler.scale_inputs(
             torch.tensor(subdf["lon"].values),
@@ -62,7 +60,7 @@ def main():
     lon_val, lat_val, r_val, idx_val, y_val = df_to_tensors(val_df)
 
     train_loader = DataLoader(
-        TensorDataset(lon_train, lat_train, r_train, idx_train, y_train),  # ✅ include idx
+        TensorDataset(lon_train, lat_train, r_train, idx_train, y_train),
         batch_size=10240,
         shuffle=True,
         num_workers=0,
@@ -70,7 +68,7 @@ def main():
     )
 
     val_loader = DataLoader(
-        TensorDataset(lon_val, lat_val, r_val, idx_val, y_val),  # ✅ include idx
+        TensorDataset(lon_val, lat_val, r_val, idx_val, y_val),
         batch_size=10240,
         shuffle=False,
         num_workers=0,
@@ -78,10 +76,10 @@ def main():
     )
 
     model = SH_SIREN(
-        lmax=10,
+        lmax=2,
         hidden_features=128,
         hidden_layers=4,
-        out_features=1,  # three acceleration components
+        out_features=1,
         first_omega_0=20,
         hidden_omega_0=1.0,
         device=device,
@@ -93,26 +91,39 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
     epochs = 1
+
+    train_losses = []
+    val_losses = []
+
     for epoch in range(epochs):
         epoch_start = time.time()
         model.train()
         train_loss = 0.0
 
         for lon_b, lat_b, r_b, idx_b, y_b in train_loader:
-            batch_df = pd.DataFrame({
-                "lon": lon_b.numpy(),
-                "lat": lat_b.numpy(),
-                "radius_m": r_b.numpy(),
-                "orig_index": idx_b.numpy(),
-            })
+            # Always clear gradients first
+            optimizer.zero_grad(set_to_none=True)
 
+            # Build batch dictionary (stay on CPU is fine if prepare_input expects it)
+            batch_df = {
+                "lon": lon_b,
+                "lat": lat_b,
+                "radius_m": r_b,
+                "orig_index": idx_b,
+            }
+
+            # Embedding does not require gradients
+            with torch.no_grad():
+                Y = model.prepare_input(batch_df)
+
+            # Forward + backward + optimize
             y_true = y_b.to(device)
-            y_pred = model(df=batch_df)
+            y_pred = model.siren(Y)
             loss = criterion(y_pred, y_true)
-
-            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
+            # Accumulate loss
             train_loss += loss.item()
 
         avg_train_loss = train_loss / len(train_loader)
@@ -121,12 +132,12 @@ def main():
         val_loss = 0.0
         with torch.no_grad():
             for lon_b, lat_b, r_b, idx_b, y_b in val_loader:
-                batch_df = pd.DataFrame({
-                    "lon": lon_b.numpy(),
-                    "lat": lat_b.numpy(),
-                    "radius_m": r_b.numpy(),
-                    "orig_index": idx_b.numpy(),
-                })
+                batch_df = {
+                    "lon": lon_b,
+                    "lat": lat_b,
+                    "radius_m": r_b,
+                    "orig_index": idx_b,
+                }
                 y_true = y_b.to(device)
                 y_pred = model(df=batch_df)
                 val_loss += criterion(y_pred, y_true).item()
@@ -134,8 +145,17 @@ def main():
         avg_val_loss = val_loss / len(val_loader)
         epoch_time = time.time() - epoch_start
 
-        print(f"Epoch [{epoch+1}/{epochs}] - Train: {avg_train_loss:.6f} | Val: {avg_val_loss:.6f} | Time: {epoch_time:.1f}s")
+        train_losses.append(avg_train_loss)
+        val_losses.append(avg_val_loss)
+        print(f"Epoch [{epoch + 1}/{epochs}] - "
+              f"Train: {avg_train_loss:.6f} | "
+              f"Val: {avg_val_loss:.6f} | "
+              f"Time: {epoch_time:.1f}s")
 
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    save_dir = os.path.join(base_dir, 'SRC', 'Models')
+    np.save(os.path.join(save_dir, "train_losses.npy"), np.array(train_losses))
+    np.save(os.path.join(save_dir, "val_losses.npy"), np.array(val_losses))
     save_dir = os.path.join(base_dir, 'SRC', 'Models')
     os.makedirs(save_dir, exist_ok=True)
     save_path = os.path.join(save_dir, 'sh_siren_trained.pth')
