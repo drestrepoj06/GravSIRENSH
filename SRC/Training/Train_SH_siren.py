@@ -76,9 +76,9 @@ def main():
         num_workers=0,
         pin_memory=torch.cuda.is_available(),
     )
-    lmax = 2
-    hidden_features = 128
-    hidden_layers = 4
+    lmax = 10
+    hidden_features = 8
+    hidden_layers = 2
     out_features = 1
     first_omega_0 = 20
     hidden_omega_0 = 1.0
@@ -95,9 +95,10 @@ def main():
         cache_path=cache_path,
     )
     criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=5e-5)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=2, min_lr=1e-6)
 
-    epochs = 1
+    epochs = 50
 
     train_losses = []
     val_losses = []
@@ -120,8 +121,7 @@ def main():
             }
 
             # Embedding does not require gradients
-            with torch.no_grad():
-                Y = model.prepare_input(batch_df)
+            Y = model.prepare_input(batch_df).detach()
 
             # Forward + backward + optimize
             y_true = y_b.to(device)
@@ -149,23 +149,27 @@ def main():
                 y_pred = model(df=batch_df)
                 val_loss += criterion(y_pred, y_true).item()
 
+
         avg_val_loss = val_loss / len(val_loader)
+        scheduler.step(avg_val_loss)
         epoch_time = time.time() - epoch_start
 
         train_losses.append(avg_train_loss)
         val_losses.append(avg_val_loss)
+        current_lr = optimizer.param_groups[0]['lr']
         print(f"Epoch [{epoch + 1}/{epochs}] - "
               f"Train: {avg_train_loss:.6f} | "
               f"Val: {avg_val_loss:.6f} | "
+              f"LR: {current_lr:.2e} | "
               f"Time: {epoch_time:.1f}s")
 
     outputs_dir = os.path.join(base_dir, "Outputs")
     save_dir = os.path.join(outputs_dir, "Models")
     os.makedirs(save_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_path = os.path.join(save_dir, f"sh_siren_lmax{model.lmax}_{timestamp}.pth")
-    np.save(os.path.join(save_dir, f"sh_siren_lmax{model.lmax}_{timestamp}_train_losses.npy"), np.array(train_losses))
-    np.save(os.path.join(save_dir, f"sh_siren_lmax{model.lmax}_{timestamp}_val_losses.npy"), np.array(val_losses))
+    save_path = os.path.join(save_dir, f"sh_siren_pyshtools_lmax{model.lmax}_{timestamp}.pth")
+    np.save(os.path.join(save_dir, f"sh_siren_pyshtools_lmax{model.lmax}_{timestamp}_train_losses.npy"), np.array(train_losses))
+    np.save(os.path.join(save_dir, f"sh_siren_pyshtools_lmax{model.lmax}_{timestamp}_val_losses.npy"), np.array(val_losses))
 
     torch.save({
         "state_dict": model.state_dict(),
@@ -199,12 +203,12 @@ def main():
         },
         "paths": {
             "model_file": save_path,
-            "train_losses": os.path.join(save_dir, "train_losses.npy"),
-            "val_losses": os.path.join(save_dir, "val_losses.npy"),
+            "train_losses": os.path.join(save_dir, f"sh_siren_pyshtools_lmax{model.lmax}_{timestamp}_train_losses.npy"),
+            "val_losses": os.path.join(save_dir, f"sh_siren_pyshtools_lmax{model.lmax}_{timestamp}_val_losses.npy"),
         }
     }
 
-    config_path = os.path.join(save_dir, f"sh_siren_lmax{model.lmax}_{timestamp}_model_config.json")
+    config_path = os.path.join(save_dir, f"sh_siren_pyshtools_lmax{model.lmax}_{timestamp}_model_config.json")
     with open(config_path, "w") as f:
         json.dump(config, f, indent=4, default=lambda o: float(o) if hasattr(o, "item") else str(o))
 
