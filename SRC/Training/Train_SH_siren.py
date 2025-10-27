@@ -19,18 +19,17 @@ from SRC.Location_encoder.SH_siren import SH_SIREN, SHSirenScaler
 
 def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    data_path = os.path.join(base_dir, 'Data', 'Samples_2190_5M_r0.parquet')
+    data_path = os.path.join(base_dir, 'Data', 'Samples_2190-2_5.0M_r0_train.parquet')
 
     df = pd.read_parquet(data_path)
     # df = df.sample(n=500000, random_state=42).reset_index(drop=True)
 
-    train_df, temp_df = train_test_split(df, test_size=0.2, random_state=42)
-    val_df, test_df = train_test_split(temp_df, test_size=0.5, random_state=42)
+    train_df, val_df = train_test_split(df, test_size=0.1, random_state=42)
 
     scaler = SHSirenScaler(r_scale=6378136.3)
     scaler.fit_potential(train_df["dV_m2_s2"].values)
 
-    for subdf in [train_df, val_df, test_df]:
+    for subdf in [train_df, val_df]:
         subdf["dV_m2_s2_scaled"] = scaler.scale_potential(subdf["dV_m2_s2"].values)
         _, _, r_scaled = scaler.scale_inputs(
             torch.tensor(subdf["lon"].values),
@@ -38,10 +37,6 @@ def main():
             torch.tensor(subdf["radius_m"].values)
         )
         subdf["radius_bar"] = r_scaled.numpy()
-
-    save_dir = os.path.join(base_dir, "Data", "Scaled")
-    os.makedirs(save_dir, exist_ok=True)
-    test_df.to_parquet(os.path.join(save_dir, "test_scaled.parquet"), index=False)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -76,9 +71,9 @@ def main():
         # persistent_workers=True
     )
 
-    lmax = 2
-    hidden_features = 128
-    hidden_layers = 4
+    lmax = 10
+    hidden_features = 8
+    hidden_layers = 2
     out_features = 1
     first_omega_0 = 20
     hidden_omega_0 = 1.0
@@ -97,7 +92,7 @@ def main():
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
-    epochs = 1
+    epochs = 50
     train_losses = []
     val_losses = []
     for epoch in range(epochs):
@@ -143,9 +138,9 @@ def main():
     save_dir = os.path.join(outputs_dir, "Models")
     os.makedirs(save_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_path = os.path.join(save_dir, f"sh_siren_lmax_torch_{lmax}_{timestamp}.pth")
-    np.save(os.path.join(save_dir, f"sh_siren_lmax_torch_{lmax}_{timestamp}_train_losses.npy"), np.array(train_losses))
-    np.save(os.path.join(save_dir, f"sh_siren_lmax_torch_{lmax}_{timestamp}_val_losses.npy"), np.array(val_losses))
+    save_path = os.path.join(save_dir, f"sh_siren_torch_lmax{lmax}_{timestamp}.pth")
+    np.save(os.path.join(save_dir, f"sh_siren_torch_lmax{lmax}_{timestamp}_train_losses.npy"), np.array(train_losses))
+    np.save(os.path.join(save_dir, f"sh_siren_torch_lmax{lmax}_{timestamp}_val_losses.npy"), np.array(val_losses))
 
     torch.save({
         "state_dict": model.state_dict(),
@@ -184,7 +179,7 @@ def main():
         }
     }
 
-    config_path = os.path.join(save_dir, f"sh_siren_lmax_torch_{lmax}_{timestamp}_model_config.json")
+    config_path = os.path.join(save_dir, f"sh_siren_torch_lmax{lmax}_{timestamp}_model_config.json")
     with open(config_path, "w") as f:
         json.dump(config, f, indent=4, default=lambda o: float(o) if hasattr(o, "item") else str(o))
 
