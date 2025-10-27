@@ -70,9 +70,6 @@ class SHEmbedding:
         print(f"💾 Merged cache saved to {final_path}")
         return final_path
 
-    # -------------------------------------------------------------------------
-    # 2. Main entry point
-    # -------------------------------------------------------------------------
     def from_dataframe(self, df: pd.DataFrame, lon_col="lon", lat_col="lat",
                        use_cache=True, parallel=True, vectorized=False,
                        chunked=False, chunk_size=500_000, delete_after=True):

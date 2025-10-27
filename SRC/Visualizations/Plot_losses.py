@@ -56,11 +56,11 @@ val_losses = np.load(os.path.join(outputs_dir, latest_val))
 use_log_scale = True  # toggle
 
 plt.figure(figsize=(7, 5))
-plt.plot(train_losses, label="Training Loss", linewidth=2)
+plt.plot(train_losses, label="Training_test Loss", linewidth=2)
 plt.plot(val_losses, label="Validation Loss", linewidth=2, linestyle='--')
 plt.xlabel("Epoch", fontsize=12)
 plt.ylabel("MSE Loss", fontsize=12)
-plt.title(f"Training vs Validation Loss\nSIREN (lmax={lmax}, {timestamp})", fontsize=14)
+plt.title(f"Training_test vs Validation Loss\nSIREN (lmax={lmax}, {timestamp})", fontsize=14)
 plt.legend()
 plt.grid(True, linestyle=':')
 plt.tight_layout()

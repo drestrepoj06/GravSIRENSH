@@ -72,10 +72,11 @@ class SH_SIREN(nn.Module):
             hidden_omega_0=hidden_omega_0
         ).to(device)
 
-        # -------------------------------------------------------
-        # 🔍 Automatically find the largest available lmax cache
-        # -------------------------------------------------------
+        # ----------------------------------------------------------------------
+        # Handle cached SH basis
+        # ----------------------------------------------------------------------
         self.Y_cache = None
+
         if self.cache_path is not None:
             base, ext = os.path.splitext(self.cache_path or "cache_basis")
             if not ext:
@@ -88,13 +89,11 @@ class SH_SIREN(nn.Module):
             selected_file = None
             lmax_found = None
 
-            # --- Case 1: exact file exists ---
             if os.path.exists(target_file):
                 selected_file = target_file
                 lmax_found = self.lmax
                 print(f"⚡ Found exact cache for lmax={self.lmax}")
 
-            # --- Case 2: find a larger one to slice from ---
             elif cache_files:
                 matches = []
                 for f in cache_files:
@@ -107,18 +106,14 @@ class SH_SIREN(nn.Module):
                     lmax_found, selected_file = larger[0]
                     print(f"⚡ Found larger cache lmax={lmax_found}. Will slice down to lmax={self.lmax}")
 
-            # --- Case 3: none found at all ---
             if selected_file is None:
-                print(f"⚠️ No cache available for base '{base}'. Generating from scratch for lmax={self.lmax}...")
-                df_coords = pd.read_parquet(os.path.join(os.path.dirname(base), "Samples_2190_5M_r0.parquet"))[
-                    ["lon", "lat"]
-                ]
-                Y = self.embedding.from_dataframe(df_coords, use_cache=False)
-                np.save(target_file, Y)
-                print(f"✅ Saved new cache: {target_file}")
-                self.Y_cache = Y
+                print(f"⚠️ No cache available for base '{base}'. "
+                      f"It will be generated automatically from the "
+                      f"dataset the first time `prepare_input()` is called.")
+                self.Y_cache = None
+                self.cache_path = target_file  # remember where to save later
             else:
-                # --- Load and slice as needed ---
+                # Load existing cache (full or sliced)
                 mmap_obj = np.load(selected_file, mmap_mode="r")
                 n_cols_needed = (self.lmax + 1) ** 2
                 n_cols_available = mmap_obj.shape[1]
@@ -127,10 +122,10 @@ class SH_SIREN(nn.Module):
                 Y = np.array(mmap_obj[:, :n_cols_needed], copy=True).astype(np.float32, copy=False)
                 del mmap_obj
 
-                # Save new smaller cache for future runs
                 if lmax_found != self.lmax:
                     print(f"💾 Saving sliced cache to: {target_file}")
                     np.save(target_file, Y)
+
                 self.Y_cache = Y
                 print(f"✅ Loaded cache: shape={self.Y_cache.shape}")
 
@@ -139,7 +134,6 @@ class SH_SIREN(nn.Module):
             self.Y_cache = None
 
     def prepare_input(self, df, lon_col='lon', lat_col='lat', use_cache=True):
-        # --- Handle both dict and DataFrame inputs ---
         if isinstance(df, dict):
             if lon_col in df and lat_col in df:
                 lon = df[lon_col]
@@ -154,24 +148,22 @@ class SH_SIREN(nn.Module):
             else:
                 raise ValueError("Unrecognized dict format passed to prepare_input()")
         else:
-            if "orig_index" in df.columns:
-                idx = df["orig_index"].values
-            else:
-                idx = df.index.values
+            lon, lat = df[lon_col].values, df[lat_col].values
+            idx = df["orig_index"].values if "orig_index" in df.columns else df.index.values
 
-        # --- Use in-memory cache if available ---
-        if use_cache and getattr(self, "Y_cache", None) is not None:
-            if np.max(idx) >= self.Y_cache.shape[0]:
-                raise IndexError("Index exceeds cached embedding size.")
-            Y = self.Y_cache[idx]
-        elif use_cache:
-            # Fallback: open smaller cache if available
-            base, ext = os.path.splitext(self.embedding.cache_path or "cache_basis")
-            if not ext:
-                ext = ".npy"
-            cache_file = f"{base}_lmax{self.lmax}{ext}"
+        base, ext = os.path.splitext(self.embedding.cache_path or "cache_basis")
+        if not ext:
+            ext = ".npy"
+        cache_file = f"{base}_lmax{self.lmax}{ext}"
+
+        # ------------------------------------------------------------------
+        # Try to use existing cache, otherwise recompute automatically
+        # ------------------------------------------------------------------
+        if use_cache and os.path.exists(cache_file):
+            print(f"📂 Loading cached SH basis from {cache_file}")
             Y = np.load(cache_file, mmap_mode="r")[idx]
         else:
+            print(f"⚙️ Cache not found for lmax={self.lmax}. Recomputing SH basis...")
             Y = self.embedding.from_dataframe(
                 pd.DataFrame({lon_col: lon, lat_col: lat}),
                 lon_col=lon_col,
@@ -179,7 +171,6 @@ class SH_SIREN(nn.Module):
                 use_cache=False
             )
 
-        # --- Convert to tensor ---
         Y_torch = torch.tensor(Y, dtype=torch.float32, device=self.device)
         return Y_torch
 
@@ -191,8 +182,7 @@ class SH_SIREN(nn.Module):
 
         if return_gradients:
             raise RuntimeError("Gradients unavailable: SH basis is precomputed and non-differentiable.")
-
-        a_scaled = self.siren(Y)  # this is what we train on (requires grad)
+        a_scaled = self.siren(Y)
         return a_scaled
 
 

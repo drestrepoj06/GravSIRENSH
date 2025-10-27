@@ -1,5 +1,5 @@
 """Generate n random samples on the sphere that contain lon, lat, r, potential and acceleration from
-EGM2008
+EGM2008. For train, n = 5 M. For test, n = 250 K distributed in a Fibonacci grid.
 jhonr"""
 
 import os
@@ -19,7 +19,7 @@ class GravityDataGenerator:
         os.makedirs(self.output_dir, exist_ok=True)
         self.output_file = os.path.join(
             self.output_dir,
-            f"Samples_{lmax_full}_{self._format_samples(n_samples)}_r{int(self.altitude)}_{self.mode}.parquet"
+            f"Samples_{lmax_full}-{lmax_base}_{self._format_samples(n_samples)}_r{int(self.altitude)}_{self.mode}.parquet"
         )
 
     @staticmethod
@@ -41,7 +41,7 @@ class GravityDataGenerator:
         clm_full = pysh.datasets.Earth.EGM2008(lmax=self.lmax_full)
         clm_low = pysh.datasets.Earth.EGM2008(lmax=self.lmax_base)
 
-        self.r0 = clm_full.r0  # ✅ store as class attribute
+        self.r0 = clm_full.r0
         r1 = self.r0 + self.altitude
 
         deg_full = np.arange(self.lmax_full + 1)
@@ -145,3 +145,39 @@ class GravityDataGenerator:
         df.to_parquet(self.output_file, index=False)
         print(f"✅ Saved: {self.output_file}")
         return df
+
+def main():
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    data_dir = os.path.join(base_dir, 'Data')
+    os.makedirs(data_dir, exist_ok=True)
+
+    lmax_full = 2190
+    lmax_base = 2
+    altitude = 0.0
+
+    generator_train = GravityDataGenerator(
+        lmax_full=lmax_full,
+        lmax_base=lmax_base,
+        n_samples=5_000_000,
+        mode="train",
+        output_dir=data_dir,
+        altitude=altitude
+    )
+    df_train = generator_train.generate()
+
+    generator_test = GravityDataGenerator(
+        lmax_full=lmax_full,
+        lmax_base=lmax_base,
+        n_samples=250_000,
+        mode="test",
+        output_dir=data_dir,
+        altitude=altitude
+    )
+    df_test = generator_test.generate()
+
+    print("\n✅ Both training and testing datasets generated successfully.")
+    print(f"   Train: {len(df_train):,} samples → {generator_train.output_file}")
+    print(f"   Test:  {len(df_test):,} samples → {generator_test.output_file}")
+
+if __name__ == "__main__":
+    main()
