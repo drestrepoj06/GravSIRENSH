@@ -18,9 +18,6 @@ class GravityDataPlotter:
         self.sample_df = pd.read_parquet(data_path)
         self.filename = os.path.basename(data_path)
 
-        # ---------------------------------------------------------------------
-        # Output folders
-        # ---------------------------------------------------------------------
         if output_dir is None:
             base_dir = os.path.abspath(os.path.join(os.path.dirname(data_path), '..', 'Outputs', 'Figures'))
             os.makedirs(base_dir, exist_ok=True)
