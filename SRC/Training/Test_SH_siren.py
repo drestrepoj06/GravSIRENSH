@@ -93,7 +93,7 @@ def main():
     true_vals = test_df["dV_m2_s2"].values
     mse = mean_squared_error(true_vals, preds_unscaled)
 
-    print(f"📊 RMSE: {mse:.6e}")
+    print(f"📊 MSE: {mse:.6e}")
 
 
     # === Save predictions ===
@@ -106,11 +106,9 @@ def main():
     npy_path = os.path.join(preds_dir, f"sh_siren_torch_lmax{lmax}_{timestamp}_preds.npy")
 
     np.save(npy_path, preds_unscaled)
-    test_df.to_parquet(parquet_path, index=False)
 
     print(f"💾 Predictions saved:")
     print(f"   • {npy_path}")
-    print(f"   • {parquet_path}")
 
     # === Save evaluation report ===
     report = {
