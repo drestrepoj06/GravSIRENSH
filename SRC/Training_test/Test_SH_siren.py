@@ -64,7 +64,30 @@ def main():
 
     true_values = test_df["dg_total_mGal"].values.astype(np.float32)
     with torch.no_grad():
-        preds = model(test_df).cpu().numpy().ravel()
+        preds_scaled = model(test_df).cpu().numpy().ravel()
+
+    preds = scaler.unscale_acceleration(preds_scaled)
+
+    true_min = true_values.min()
+    true_max = true_values.max()
+    true_mean = true_values.mean()
+    true_std = true_values.std()
+    pred_min = preds.min()
+    pred_max = preds.max()
+    pred_mean = preds.mean()
+    pred_std = preds.std()
+
+    print(f"📉 Predictions statistics:")
+    print(f"   • Min:  {pred_min:.6f}")
+    print(f"   • Max:  {pred_max:.6f}")
+    print(f"   • Mean: {pred_mean:.6f}")
+    print(f"   • Std:  {pred_std:.6f}")
+
+    print(f"📉 True statistics:")
+    print(f"   • Min:  {true_min:.6f}")
+    print(f"   • Max:  {true_max:.6f}")
+    print(f"   • Mean: {true_mean:.6f}")
+    print(f"   • Std:  {true_std:.6f}")
 
     mse = np.mean((preds - true_values) ** 2)
     print(f"📊 MSE: {mse:.6f} (mGal²)")
@@ -86,7 +109,15 @@ def main():
         "lmax": config["lmax"],
         "hidden_layers": config["hidden_layers"],
         "samples": len(test_df),
-        "mse_mgal2": float(np.mean((preds - true_values) ** 2)),
+        "mse_mgal2": float(mse),
+        "pred_min": float(pred_min),
+        "pred_max": float(pred_max),
+        "pred_mean": float(pred_mean),
+        "pred_std": float(pred_std),
+        "true_min": float(true_min),
+        "true_max": float(true_max),
+        "true_mean": float(true_mean),
+        "true_std": float(true_std)
     }
 
     with open(output_file.replace(".npy", "_meta.json"), "w") as f:

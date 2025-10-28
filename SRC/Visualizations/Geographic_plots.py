@@ -266,6 +266,65 @@ class GravityDataPlotter:
         print(f"✅ Scatter comparison figure saved: {output_path}")
         plt.close()
 
+        plt.figure(figsize=(10, 5))
+        ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180))
+        sc = ax.scatter(
+            self.sample_df["lon"],
+            self.sample_df["lat"],
+            c=self.sample_df["predicted_dg_total_mGal"],
+            s=s,
+            alpha=alpha,
+            cmap=cmap,
+            transform=ccrs.PlateCarree()
+        )
+        ax.set_global()
+        gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
+        gl.top_labels = False
+        gl.right_labels = False
+        gl.bottom_labels = True
+        gl.left_labels = True
+        cbar = plt.colorbar(sc, orientation="horizontal", pad=0.04, aspect=40)
+        cbar.set_label("mGal")
+        ax.set_title(
+            f"Predicted Δg (Model L{model_lmax}, Data L{self.lmax}, {self.mode})",
+            fontsize=11, pad=10
+        )
+
+        output_filename_pred = (
+            f"Scatter_Predicted_modelL{model_lmax}_{timestamp}_"
+            f"dataL{self.lmax}_{self.mode}.png"
+        )
+        output_path_pred = os.path.join(self.output_dir, output_filename_pred)
+        plt.savefig(output_path_pred, dpi=300, bbox_inches="tight")
+        print(f"✅ Separate predictions figure saved: {output_path_pred}")
+        plt.close()
+
+        plt.figure(figsize=(8, 5))
+        plt.hist(
+            self.sample_df["predicted_dg_total_mGal"],
+            bins=100,
+            color="steelblue",
+            edgecolor="black",
+            alpha=0.8
+        )
+        plt.xlabel("Predicted Δg (mGal)")
+        plt.ylabel("Frequency")
+        plt.title(
+            f"Histogram of Predicted Δg\n(Model L{model_lmax}, Data L{self.lmax}, {self.mode})",
+            fontsize=11
+        )
+        plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+        plt.tight_layout()
+
+        output_filename_hist = (
+            f"Histogram_Predicted_modelL{model_lmax}_{timestamp}_"
+            f"dataL{self.lmax}_{self.mode}.png"
+        )
+        output_path_hist = os.path.join(self.output_dir, output_filename_hist)
+        plt.savefig(output_path_hist, dpi=300, bbox_inches="tight")
+        print(f"✅ Histogram of predictions saved: {output_path_hist}")
+        plt.close()
+
     @classmethod
     def from_latest(cls, data_dir, output_dir=None):
         pattern_train = os.path.join(data_dir, "Samples_*_train.parquet")
@@ -301,15 +360,15 @@ def main():
     train_plotter, test_plotter = GravityDataPlotter.from_latest(data_dir, output_dir)
 
     # Train plots
-    train_plotter.plot_map(value_col="dg_total_mGal")
-    train_plotter.plot_density("lat")
-    train_plotter.plot_density("lon")
+    #train_plotter.plot_map(value_col="dg_total_mGal")
+    #train_plotter.plot_density("lat")
+    #train_plotter.plot_density("lon")
     train_plotter.plot_scatter(color_by="dg_total_mGal", s=0.3, alpha=0.6)
 
     # Test plots (+ predictions if available)
-    test_plotter.plot_map(value_col="dg_total_mGal")  # adds predicted & error maps if found
-    test_plotter.plot_density("lat")
-    test_plotter.plot_density("lon")
+    #test_plotter.plot_map(value_col="dg_total_mGal")  # adds predicted & error maps if found
+    #test_plotter.plot_density("lat")
+    #test_plotter.plot_density("lon")
     test_plotter.plot_scatter(color_by="dg_total_mGal", s=0.3, alpha=0.6)
 
     print("\n✅ All plots saved in:", output_dir)
