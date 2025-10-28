@@ -22,7 +22,6 @@ def main():
     data_path = os.path.join(base_dir, 'Data', 'Samples_2190-2_5.0M_r0_train.parquet')
 
     df = pd.read_parquet(data_path)
-    # df = df.sample(n=500000, random_state=42).reset_index(drop=True)
 
     train_df, val_df = train_test_split(df, test_size=0.1, random_state=42)
 

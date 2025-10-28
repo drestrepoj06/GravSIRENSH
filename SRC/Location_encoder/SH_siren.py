@@ -32,8 +32,8 @@ class SHSirenScaler:
 
         # Derived acceleration scale (if needed)
         if self.U_max is not None and self.U_min is not None and r_scale is not None:
-            u_scale = max(abs(self.U_min), abs(self.U_max))
-            self.a_scale = u_scale / r_scale
+            self.u_scale = max(abs(self.U_min), abs(self.U_max))
+            self.a_scale = self.u_scale / self.r_scale
         else:
             self.a_scale = None
 
