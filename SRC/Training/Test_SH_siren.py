@@ -88,6 +88,27 @@ def main():
         preds_scaled = model(lon, lat, r).cpu().numpy().ravel()
 
     preds_unscaled = scaler.unscale_potential(preds_scaled)
+
+    true_min = test_df["dV_m2_s2"].min()
+    true_max = test_df["dV_m2_s2"].max()
+    true_mean = test_df["dV_m2_s2"].mean()
+    true_std = test_df["dV_m2_s2"].std()
+    pred_min = preds_unscaled.min()
+    pred_max = preds_unscaled.max()
+    pred_mean = preds_unscaled.mean()
+    pred_std = preds_unscaled.std()
+    print(f"📉 Predictions statistics:")
+    print(f"   • Min:  {pred_min:.6f}")
+    print(f"   • Max:  {pred_max:.6f}")
+    print(f"   • Mean: {pred_mean:.6f}")
+    print(f"   • Std:  {pred_std:.6f}")
+
+    print(f"📉 True statistics:")
+    print(f"   • Min:  {true_min:.6f}")
+    print(f"   • Max:  {true_max:.6f}")
+    print(f"   • Mean: {true_mean:.6f}")
+    print(f"   • Std:  {true_std:.6f}")
+
     test_df["predicted_dV_m2_s2"] = preds_unscaled
 
     true_vals = test_df["dV_m2_s2"].values
@@ -115,7 +136,6 @@ def main():
         "timestamp": timestamp,
         "device": str(device),
         "lmax": lmax,
-        "n_samples": len(test_df),
         "mse": float(mse),
         "model_file": model_path,
         "config_file": config_path,
