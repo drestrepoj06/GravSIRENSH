@@ -139,7 +139,15 @@ def main():
         "mse": float(mse),
         "model_file": model_path,
         "config_file": config_path,
-        "preds_file": npy_path
+        "preds_file": npy_path,
+        "pred_min": float(pred_min),
+        "pred_max": float(pred_max),
+        "pred_mean": float(pred_mean),
+        "pred_std": float(pred_std),
+        "true_min": float(true_min),
+        "true_max": float(true_max),
+        "true_mean": float(true_mean),
+        "true_std": float(true_std)
     }
     report_path = os.path.join(preds_dir, f"sh_siren_torch_lmax{lmax}_{timestamp}_test_report.json")
     with open(report_path, "w") as f:
