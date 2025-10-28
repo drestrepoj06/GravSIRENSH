@@ -78,8 +78,8 @@ class GravityDataPlotter:
         if len(preds) != len(self.sample_df):
             print("⚠️ Prediction file length does not match test data.")
             return
-        self.sample_df["predicted_dg_total_mGal"] = preds
-        self.sample_df["error_mGal"] = preds - self.sample_df["dg_total_mGal"]
+        self.sample_df["predicted_dV_m2_s2"] = preds
+        self.sample_df["error_mGal"] = preds - self.sample_df["dV_m2_s2"]
         self.has_predictions = True
         print(f"✅ Loaded {len(preds):,} predictions.")
 
@@ -95,7 +95,7 @@ class GravityDataPlotter:
             grid[mask] = griddata(points, values, (Lon[mask], Lat[mask]), method="nearest")
         return Lon, Lat, grid
 
-    def plot_map(self, value_col="dg_total_mGal", lmax_base=None, cmap="viridis"):
+    def plot_map(self, value_col="dV_m2_s2", lmax_base=None, cmap="viridis"):
         """Interpolated global map of the selected field."""
 
         lon_grid = np.linspace(0, 360, 720)
@@ -214,7 +214,7 @@ class GravityDataPlotter:
         # ------------------------------------------------------------------
         # Case 2: Comparison scatter map (predicted vs true)
         # ------------------------------------------------------------------
-        cols = ["dg_total_mGal", "predicted_dg_total_mGal"]
+        cols = ["dV_m2_s2", "predicted_dV_m2_s2"]
         titles = ["True Δg", "Predicted Δg"]
 
         # Try to extract lmax and timestamp from predictions filename
@@ -232,8 +232,8 @@ class GravityDataPlotter:
             axes = [axes]
 
         # Common color scale for better comparison
-        vmin = min(self.sample_df["dg_total_mGal"].min(), self.sample_df["predicted_dg_total_mGal"].min())
-        vmax = max(self.sample_df["dg_total_mGal"].max(), self.sample_df["predicted_dg_total_mGal"].max())
+        vmin = min(self.sample_df["dV_m2_s2"].min(), self.sample_df["predicted_dV_m2_s2"].min())
+        vmax = max(self.sample_df["dV_m2_s2"].max(), self.sample_df["predicted_dV_m2_s2"].max())
 
         for ax, col, title in zip(axes, cols, titles):
             sc = ax.scatter(
@@ -271,7 +271,7 @@ class GravityDataPlotter:
         sc = ax.scatter(
             self.sample_df["lon"],
             self.sample_df["lat"],
-            c=self.sample_df["predicted_dg_total_mGal"],
+            c=self.sample_df["predicted_dV_m2_s2"],
             s=s,
             alpha=alpha,
             cmap=cmap,
@@ -301,7 +301,7 @@ class GravityDataPlotter:
 
         plt.figure(figsize=(8, 5))
         plt.hist(
-            self.sample_df["predicted_dg_total_mGal"],
+            self.sample_df["predicted_dV_m2_s2"],
             bins=100,
             color="steelblue",
             edgecolor="black",
@@ -360,16 +360,16 @@ def main():
     train_plotter, test_plotter = GravityDataPlotter.from_latest(data_dir, output_dir)
 
     # Train plots
-    #train_plotter.plot_map(value_col="dg_total_mGal")
+    #train_plotter.plot_map(value_col="dV_m2_s2")
     #train_plotter.plot_density("lat")
     #train_plotter.plot_density("lon")
-    train_plotter.plot_scatter(color_by="dg_total_mGal", s=0.3, alpha=0.6)
+    train_plotter.plot_scatter(color_by="dV_m2_s2", s=0.3, alpha=0.6)
 
     # Test plots (+ predictions if available)
-    #test_plotter.plot_map(value_col="dg_total_mGal")  # adds predicted & error maps if found
+    #test_plotter.plot_map(value_col="dV_m2_s2")  # adds predicted & error maps if found
     #test_plotter.plot_density("lat")
     #test_plotter.plot_density("lon")
-    test_plotter.plot_scatter(color_by="dg_total_mGal", s=0.3, alpha=0.6)
+    test_plotter.plot_scatter(color_by="dV_m2_s2", s=0.3, alpha=0.6)
 
     print("\n✅ All plots saved in:", output_dir)
 

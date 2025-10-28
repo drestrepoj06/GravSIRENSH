@@ -27,9 +27,6 @@ class SHEmbedding:
         self.normalization = normalization
         self.cache_path = cache_path
 
-    # -------------------------------------------------------------------------
-    # 1. Merge chunks safely
-    # -------------------------------------------------------------------------
     def merge_chunks(self, chunk_files, final_path=None, delete_after=False):
         """Safely merge partial .npy chunks into one valid file (memory-mapped)."""
         if final_path is None:
@@ -99,7 +96,6 @@ class SHEmbedding:
                     n_basis = (self.lmax + 1) ** 2
                     return Y_full[:, :n_basis]
 
-        # --- chunked mode ---
         if chunked:
             n = len(df)
             chunks = (n + chunk_size - 1) // chunk_size
@@ -110,10 +106,7 @@ class SHEmbedding:
                 print(f"🧩 Processing chunk {i + 1}/{chunks}")
                 df_chunk = df.iloc[i * chunk_size:(i + 1) * chunk_size]
                 cache_i = f"{base}_part{i:02d}_lmax{self.lmax}{ext}"
-                Y = self._compute_basis(df_chunk[lon_col].values,
-                                        df_chunk[lat_col].values,
-                                        parallel=parallel,
-                                        vectorized=vectorized)
+                Y = self._compute_basis(df_chunk[lon_col].values)
                 np.save(cache_i, Y.astype(np.float32))
                 chunk_files.append(cache_i)
                 del Y
@@ -124,40 +117,15 @@ class SHEmbedding:
 
         # --- single-shot mode ---
         print(f"⚙️ Computing SH basis for {len(df):,} samples (lmax={self.lmax}) ...")
-        Y = self._compute_basis(lon, lat, parallel=parallel, vectorized=vectorized)
+        Y = self._compute_basis(lon, lat)
         np.save(cache_file, Y.astype(np.float32))
         print(f"💾 Cached SH basis saved to {cache_file}")
         return Y
 
-    # -------------------------------------------------------------------------
-    # 3. Computation backends
-    # -------------------------------------------------------------------------
-    def _compute_basis(self, lon, lat, parallel=True, vectorized=False):
-        if vectorized:
-            return self._compute_basis_vectorized(lon, lat)
-        elif parallel:
-            return self._compute_basis_parallel(lon, lat)
-        else:
-            return self._compute_basis_serial(lon, lat)
+    def _compute_basis(self, lon, lat):
+        return self._compute_basis_parallel(lon, lat)
 
-    def _compute_basis_serial(self, lon, lat):
-        n_points = len(lat)
-        n_basis = (self.lmax + 1) ** 2
-        Y = np.zeros((n_points, n_basis), dtype=np.float32)
-        theta = 90.0 - lat
-        for i, (th, ph) in enumerate(zip(theta, lon)):
-            ylm = pysh.expand.spharm(self.lmax, th, ph,
-                                     normalization=self.normalization,
-                                     kind="real")
-            y_list = []
-            for l in range(self.lmax + 1):
-                for m in range(l, 0, -1):
-                    y_list.append(ylm[1, l, m])
-                y_list.append(ylm[0, l, 0])
-                for m in range(1, l + 1):
-                    y_list.append(ylm[0, l, m])
-            Y[i, :] = np.array(y_list, dtype=np.float32)
-        return Y
+
 
     def _compute_basis_parallel(self, lon, lat):
         theta = 90.0 - lat
@@ -169,22 +137,4 @@ class SHEmbedding:
             )
         return np.vstack(results).astype(np.float32)
 
-    def _compute_basis_vectorized(self, lon, lat):
-        """Vectorized evaluation for regular grids."""
-        unique_lats = np.unique(lat)
-        unique_lons = np.unique(lon)
-        n_lat, n_lon = len(unique_lats), len(unique_lons)
-        if n_lat * n_lon != len(lat):
-            print("⚠️ Lat/Lon not on a regular grid — falling back to parallel mode.")
-            return self._compute_basis_parallel(lon, lat)
-
-        Y_grid = []
-        for l in range(self.lmax + 1):
-            for m in range(-l, l + 1):
-                Ylm = pysh.expand.spharm(
-                    l, 90 - unique_lats[:, None], unique_lons[None, :],
-                    normalization=self.normalization, kind="real"
-                )
-                Y_grid.append(Ylm.flatten())
-        return np.stack(Y_grid, axis=1).astype(np.float32)
 

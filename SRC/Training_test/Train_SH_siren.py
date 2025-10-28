@@ -72,7 +72,7 @@ def main():
     )
 
     # --- Model ---
-    lmax = 2
+    lmax = 10
     hidden_features = 8
     hidden_layers = 2
     out_features = 1
