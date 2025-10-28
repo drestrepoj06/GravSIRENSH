@@ -36,8 +36,10 @@ def main():
 
     scaler = SHSirenScaler(
         r_scale=scaler_data["r_scale"],
-        a_min=scaler_data["a_min"],
-        a_max=scaler_data["a_max"],
+        t_min=scaler_data["t_min"],
+        t_max=scaler_data["t_max"],
+        target_name=scaler_data.get("target_name", None),
+        target_units=scaler_data.get("target_units", None),
     )
 
     cache_path = os.path.join(base_dir, "Data", "cache_basis_test")
@@ -62,11 +64,11 @@ def main():
     test_df = pd.read_parquet(test_path)
     print(f"📈 Loaded {len(test_df):,} test samples")
 
-    true_values = test_df["dg_total_mGal"].values.astype(np.float32)
+    true_values = test_df["dV_m2_s2"].values.astype(np.float32)
     with torch.no_grad():
         preds_scaled = model(test_df).cpu().numpy().ravel()
 
-    preds = scaler.unscale_acceleration(preds_scaled)
+    preds = scaler.unscale_target(preds_scaled)
 
     true_min = true_values.min()
     true_max = true_values.max()
@@ -97,7 +99,7 @@ def main():
     model_name = os.path.splitext(os.path.basename(latest_model_path))[0]
     output_file = os.path.join(
         outputs_dir,
-        f"{model_name}_preds_{len(test_df):,d}_samples.npy".replace(",", "")
+        f"{model_name}_preds.npy".replace(",", "")
     )
 
     np.save(output_file, preds)
@@ -120,10 +122,10 @@ def main():
         "true_std": float(true_std)
     }
 
-    with open(output_file.replace(".npy", "_meta.json"), "w") as f:
+    with open(output_file.replace(".npy", "_test_report.json"), "w") as f:
         json.dump(meta, f, indent=4)
 
-    print(f"🧩 Metadata saved to {output_file.replace('.npy', '_meta.json')}")
+    print(f"🧩 Metadata saved to {output_file.replace('.npy', '_test_report.json')}")
 
     return model, test_df, preds
 

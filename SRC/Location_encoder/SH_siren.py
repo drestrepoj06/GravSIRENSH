@@ -13,37 +13,41 @@ import pandas as pd
 import glob
 import re
 
-# Scaling acceleration outputs in the range [-1, 1],
+# Scaling target outputs in the range [-1, 1],
 # based on the scaling preferred for SIRENNETS: https://github.com/vsitzmann/siren
 # https://github.com/vsitzmann/siren/blob/4df34baee3f0f9c8f351630992c1fe1f69114b5f/explore_siren.ipynb
 class SHSirenScaler:
-
-    def __init__(self, r_scale=None, a_min=None, a_max=None):
+    def __init__(self, r_scale=None, t_min=None, t_max=None, target_name=None, target_units=None):
         self.r_scale = r_scale
-        self.a_min = a_min
-        self.a_max = a_max
+        self.t_min = t_min
+        self.t_max = t_max
+        self.target_name = target_name
+        self.target_units = target_units
 
     def scale_inputs(self, lon, lat, r):
         if self.r_scale:
             r = r / self.r_scale
         return lon, lat, r
 
-    def fit_acceleration(self, a_components):
-        a_all = np.concatenate([np.ravel(a) for a in np.atleast_2d(a_components).T], axis=0)
-        self.a_min = np.min(a_all)
-        self.a_max = np.max(a_all)
+    def fit_target(self, y, target_name=None, target_units=None):
+        y_all = np.concatenate([np.ravel(yc) for yc in np.atleast_2d(y).T], axis=0)
+        self.t_min = float(np.min(y_all))
+        self.t_max = float(np.max(y_all))
+        if target_name is not None:
+            self.target_name = target_name
+        if target_units is not None:
+            self.target_units = target_units
         return self
 
-    def scale_acceleration(self, a_components):
-        if self.a_min is None or self.a_max is None:
-            raise ValueError("Call fit_acceleration() before scaling.")
-        return 2 * (a_components - self.a_min) / (self.a_max - self.a_min) - 1
+    def scale_target(self, y):
+        if self.t_min is None or self.t_max is None:
+            raise ValueError("Call fit_target() before scaling.")
+        return 2 * (y - self.t_min) / (self.t_max - self.t_min) - 1
 
-    def unscale_acceleration(self, a_scaled):
-        if self.a_min is None or self.a_max is None:
+    def unscale_target(self, y_scaled):
+        if self.t_min is None or self.t_max is None:
             raise ValueError("Scaler not fitted.")
-        return (a_scaled + 1) * 0.5 * (self.a_max - self.a_min) + self.a_min
-
+        return (y_scaled + 1) * 0.5 * (self.t_max - self.t_min) + self.t_min
 
 # Based on the code https://github.com/MarcCoru/locationencoder/blob/main/locationencoder/locationencoder.py
 # But only for the encoder SH + Siren network
@@ -134,6 +138,7 @@ class SH_SIREN(nn.Module):
             self.Y_cache = None
 
     def prepare_input(self, df, lon_col='lon', lat_col='lat', use_cache=True):
+        # ---------------------- extract coordinates & indices ----------------------
         if isinstance(df, dict):
             if lon_col in df and lat_col in df:
                 lon = df[lon_col]
@@ -145,30 +150,36 @@ class SH_SIREN(nn.Module):
                 idx = np.arange(len(lon))
             elif "orig_index" in df:
                 idx = df["orig_index"].cpu().numpy() if torch.is_tensor(df["orig_index"]) else df["orig_index"]
+                lon = lat = None  # not needed when using cache
             else:
                 raise ValueError("Unrecognized dict format passed to prepare_input()")
         else:
             lon, lat = df[lon_col].values, df[lat_col].values
             idx = df["orig_index"].values if "orig_index" in df.columns else df.index.values
 
+        # ---------------------- resolve cache filename ----------------------
         base, ext = os.path.splitext(self.embedding.cache_path or "cache_basis")
         if not ext:
             ext = ".npy"
         cache_file = f"{base}_lmax{self.lmax}{ext}"
 
-        # ------------------------------------------------------------------
-        # Try to use existing cache, otherwise recompute automatically
-        # ------------------------------------------------------------------
+        # ---------------------- load cache ONCE ----------------------
+        if not hasattr(self, "_cached_basis"):
+            self._cached_basis = None
+
         if use_cache and os.path.exists(cache_file):
-            print(f"📂 Loading cached SH basis from {cache_file}")
-            Y = np.load(cache_file, mmap_mode="r")[idx]
+            if self._cached_basis is None:
+                print(f"📂 Loading cached SH basis from {cache_file}")
+                # load into memory once (or memory-map if large)
+                self._cached_basis = np.load(cache_file, mmap_mode="r")
+            Y = self._cached_basis[idx]
         else:
             print(f"⚙️ Cache not found for lmax={self.lmax}. Recomputing SH basis...")
             Y = self.embedding.from_dataframe(
                 pd.DataFrame({lon_col: lon, lat_col: lat}),
                 lon_col=lon_col,
                 lat_col=lat_col,
-                use_cache=False
+                use_cache=False,
             )
 
         Y_torch = torch.tensor(Y, dtype=torch.float32, device=self.device)
