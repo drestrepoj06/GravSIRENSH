@@ -64,7 +64,7 @@ def main():
     test_df = pd.read_parquet(test_path)
     print(f"📈 Loaded {len(test_df):,} test samples")
 
-    true_values = test_df["dV_m2_s2"].values.astype(np.float32)
+    true_values = test_df["dg_total_mGal"].values.astype(np.float32)
     with torch.no_grad():
         preds_scaled = model(test_df).cpu().numpy().ravel()
 

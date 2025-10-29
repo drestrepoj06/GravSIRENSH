@@ -28,12 +28,12 @@ def main():
 
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
-    # --- Scaler for ΔV (potential) ---
+    # --- Scaler for target variable ---
     scaler = SHSirenScaler(r_scale=6378136.3)
-    scaler.fit_target(train_df["dV_m2_s2"].values, target_name="dV", target_units="m²/s²")
+    scaler.fit_target(train_df["dg_total_mGal"].values, target_name="dg", target_units="m/s²")
 
     for subdf in [train_df, val_df]:
-        subdf["dV_scaled"] = scaler.scale_target(subdf["dV_m2_s2"].values)
+        subdf["dg_scaled"] = scaler.scale_target(subdf["dg_total_mGal"].values)
         _, _, r_scaled = scaler.scale_inputs(
             torch.tensor(subdf["lon"].values),
             torch.tensor(subdf["lat"].values),
@@ -50,7 +50,7 @@ def main():
         lat = torch.tensor(df["lat"].values, dtype=torch.float32)
         r = torch.tensor(df["radius_m"].values, dtype=torch.float32)
         idx = torch.tensor(df["orig_index"].values, dtype=torch.long)
-        y = torch.tensor(df["dV_scaled"].values, dtype=torch.float32).unsqueeze(1)
+        y = torch.tensor(df["dg_scaled"].values, dtype=torch.float32).unsqueeze(1)
         return lon, lat, r, idx, y
 
     lon_train, lat_train, r_train, idx_train, y_train = df_to_tensors(train_df)
@@ -96,7 +96,7 @@ def main():
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=2, min_lr=1e-6)
 
-    epochs = 1
+    epochs = 100
     train_losses, val_losses = [], []
 
     for epoch in range(epochs):
