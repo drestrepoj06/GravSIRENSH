@@ -91,9 +91,9 @@ def main():
     alpha = 1.0
     beta = 50.0
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=6e-4)
 
-    epochs = 500
+    epochs = 50
     train_losses = []
     val_losses = []
 
