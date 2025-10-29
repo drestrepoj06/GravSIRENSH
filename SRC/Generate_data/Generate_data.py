@@ -16,10 +16,18 @@ class GravityDataGenerator:
         self.output_dir = output_dir
         self.altitude = altitude
 
+        # Ensure directory exists
         os.makedirs(self.output_dir, exist_ok=True)
+
+        # Determine actual number of samples (after generation)
+        n_final = len(self.samples) if hasattr(self, "samples") else n_samples
+
+        # Use actual number in filename
+        sample_tag = self._format_samples(n_final)
+
         self.output_file = os.path.join(
             self.output_dir,
-            f"Samples_{lmax_full}-{lmax_base}_{self._format_samples(n_samples)}_r{int(self.altitude)}_{self.mode}.parquet"
+            f"Samples_{lmax_full}-{lmax_base}_{sample_tag}_r{int(self.altitude)}_{self.mode}.parquet"
         )
 
     @staticmethod
@@ -30,7 +38,6 @@ class GravityDataGenerator:
             return f"{n / 1_000:.0f}k"
         else:
             return str(n)
-
 
     def _scale_clm(self, clm, scale):
         scaled = clm.copy()
@@ -123,7 +130,7 @@ class GravityDataGenerator:
         dg_r = gr_full - gr_low
         dg_theta = gtheta_full - gtheta_low
         dg_phi = gphi_full - gphi_low
-        dg_total = np.sqrt(dg_r**2 + dg_theta**2 + dg_phi**2)
+        dg_total = np.sqrt(dg_theta**2 + dg_phi**2)#+dg_r**2) the radial component will be added when changing altitude
 
         lats = res_full.pot.lats()
         lons = res_full.pot.lons()
@@ -158,7 +165,7 @@ def main():
     generator_train = GravityDataGenerator(
         lmax_full=lmax_full,
         lmax_base=lmax_base,
-        n_samples=5_000_000,
+        n_samples=5000000,
         mode="train",
         output_dir=data_dir,
         altitude=altitude
@@ -168,7 +175,7 @@ def main():
     generator_test = GravityDataGenerator(
         lmax_full=lmax_full,
         lmax_base=lmax_base,
-        n_samples=250_000,
+        n_samples=250000,
         mode="test",
         output_dir=data_dir,
         altitude=altitude

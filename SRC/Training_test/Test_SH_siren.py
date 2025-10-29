@@ -5,7 +5,6 @@ import sys
 import torch
 import numpy as np
 import pandas as pd
-from datetime import datetime
 import json
 from sklearn.metrics import mean_squared_error
 
@@ -20,7 +19,7 @@ def main():
     outputs_dir = os.path.join(base_dir, "Outputs", "Models")
 
     # External test dataset (new distribution)
-    test_data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_r0_test.parquet")
+    test_data_path = os.path.join(base_dir, "Data", "Samples_10-2_50_r0_test.parquet")
 
     # === Find latest trained model/config ===
     model_files = [f for f in os.listdir(outputs_dir) if f.endswith(".pth")]
@@ -44,7 +43,7 @@ def main():
     # === Load model and scaler ===
     checkpoint = torch.load(model_path, map_location=device)
 
-    scaler = SHSirenScaler(r_scale=checkpoint["scaler"]["r_scale"])
+    scaler = SHSirenScaler()
     scaler.U_min = checkpoint["scaler"]["U_min"]
     scaler.U_max = checkpoint["scaler"]["U_max"]
 
@@ -76,138 +75,91 @@ def main():
     lat_t = torch.tensor(test_df["lat"].values, dtype=torch.float32)
     r_t = torch.tensor(test_df["radius_m"].values, dtype=torch.float32)
 
-    lon_scaled, lat_scaled, r_scaled = scaler.scale_inputs(lon_t, lat_t, r_t)
-    test_df["radius_bar"] = r_scaled.numpy()
-
     lon = lon_t.to(device)
     lat = lat_t.to(device)
     r = r_t.to(device)
 
-    # === Generate predictions ===
-    # Enable gradient tracking
-    deg2rad = np.pi / 180.0
+    # --- model grads in scaled space (per DEG for lon/lat) ---
+    U_phys, grads_phys = model(lon, lat, r, return_gradients=True, physical_units=True)
 
-    # Enable gradient tracking
-    lon.requires_grad_(True)
-    lat.requires_grad_(True)
-    r.requires_grad_(True)
+    # grads_phys = (dU/dlon, dU/dlat, dU/dr) but dU/dr≈0 now
+    a_theta = -grads_phys[0]
+    a_phi = -grads_phys[1]
 
-    # Get scaled-output gradients (model outputs U_scaled)
-    U_scaled, (dUscaled_dlon_deg, dUscaled_dlat_deg, dUscaled_dr) = model(
-        lon, lat, r, return_gradients=True, physical_units=False  # important: False
-    )
+    # 6) Convert to mGal and magnitude
+    a_theta_mGal = a_theta.detach().cpu().numpy().ravel() * 1e5
+    a_phi_mGal = a_phi.detach().cpu().numpy().ravel() * 1e5
+    g_mag = torch.sqrt(a_theta ** 2 + a_phi ** 2)
+    a_mag_mGal = g_mag.detach().cpu().numpy().ravel() * 1e5
+    U_pred = U_phys.detach().cpu().numpy().ravel()
 
-    # Unscale gradients from U_scaled -> U (m^2/s^2) using S = (Umax - Umin)/2
-    S = 0.5 * (scaler.U_max - scaler.U_min)
-    dU_dlon_deg = dUscaled_dlon_deg * S
-    dU_dlat_deg = dUscaled_dlat_deg * S
-    dU_dr = dUscaled_dr * S  # already per meter
+    true_u = test_df["dV_m2_s2"].values
+    true_theta = test_df["dg_theta_mGal"].values
+    true_phi = test_df["dg_phi_mGal"].values
+    true_mag = test_df["dg_total_mGal"].values
 
-    # Convert degree-gradients -> radian-gradients
-    dU_dlon = dU_dlon_deg * (1.0 / deg2rad)  # ∂U/∂lon [per rad]
-    dU_dlat = dU_dlat_deg * (1.0 / deg2rad)  # ∂U/∂lat [per rad]
-
-    # Map to spherical (θ, φ), with θ = colatitude = π/2 - lat
-    lat_rad = lat * deg2rad
-    theta = 0.5 * np.pi - lat_rad
-    sin_theta = torch.sin(theta).clamp_min(1e-12)  # avoid division by zero
-
-    # ∂/∂θ = - ∂/∂lat
-    dU_dtheta = -dU_dlat
-
-    # Spherical components (m/s^2): g_r, g_theta (southward), g_phi (eastward)
-    g_r = dU_dr
-    g_theta = (1.0 / r) * dU_dtheta
-    g_phi = (1.0 / (r * sin_theta)) * dU_dlon
-
-    # Magnitude
-    g_mag = torch.sqrt(g_r ** 2 + g_theta ** 2 + g_phi ** 2)
-
-    # Move to CPU numpy
-    a_r_mps2 = g_r.detach().cpu().numpy().ravel()
-    a_theta_mps2 = g_theta.detach().cpu().numpy().ravel()
-    a_phi_mps2 = g_phi.detach().cpu().numpy().ravel()
-    a_mag_mps2 = g_mag.detach().cpu().numpy().ravel()
-
-    # Convert to mGal for comparison (1 m/s^2 = 1e5 mGal)
-    a_r_mGal = a_r_mps2 * 1e5
-    a_theta_mGal = a_theta_mps2 * 1e5
-    a_phi_mGal = a_phi_mps2 * 1e5
-    a_mag_mGal = a_mag_mps2 * 1e5
-
-    test_df["pred_dg_r_mGal"] = a_r_mGal
-    test_df["pred_dg_theta_mGal"] = a_theta_mGal
-    test_df["pred_dg_phi_mGal"] = a_phi_mGal
-    test_df["pred_dg_mag_mGal"] = a_mag_mGal
-
-    # === True (already in mGal)
-    dg_r = test_df["dg_r_mGal"].values
-    dg_theta = test_df["dg_theta_mGal"].values
-    dg_phi = test_df["dg_phi_mGal"].values
-    true_mag = np.sqrt(dg_r ** 2 + dg_theta ** 2 + dg_phi ** 2)
-
-    # === Pred (now in mGal)
-    pred_r = test_df["pred_dg_r_mGal"].values
-    pred_theta = test_df["pred_dg_theta_mGal"].values
-    pred_phi = test_df["pred_dg_phi_mGal"].values
-    pred_mag = test_df["pred_dg_mag_mGal"].values
-
+    # === Compute statistics ===
     true_stats = {
-        "true_a_r_min": float(dg_r.min()), "true_a_r_max": float(dg_r.max()),
-        "true_a_r_mean": float(dg_r.mean()), "true_a_r_std": float(dg_r.std()),
-        "true_a_theta_min": float(dg_theta.min()), "true_a_theta_max": float(dg_theta.max()),
-        "true_a_theta_mean": float(dg_theta.mean()), "true_a_theta_std": float(dg_theta.std()),
-        "true_a_phi_min": float(dg_phi.min()), "true_a_phi_max": float(dg_phi.max()),
-        "true_a_phi_mean": float(dg_phi.mean()), "true_a_phi_std": float(dg_phi.std()),
+        "true_U_min": float(true_u.min()), "true_U_max": float(true_u.max()),
+        "true_U_mean": float(true_u.mean()), "true_U_std": float(true_u.std()),
+        "true_a_theta_min": float(true_theta.min()), "true_a_theta_max": float(true_theta.max()),
+        "true_a_theta_mean": float(true_theta.mean()), "true_a_theta_std": float(true_theta.std()),
+        "true_a_phi_min": float(true_phi.min()), "true_a_phi_max": float(true_phi.max()),
+        "true_a_phi_mean": float(true_phi.mean()), "true_a_phi_std": float(true_phi.std()),
         "true_a_mag_min": float(true_mag.min()), "true_a_mag_max": float(true_mag.max()),
         "true_a_mag_mean": float(true_mag.mean()), "true_a_mag_std": float(true_mag.std()),
     }
 
     pred_stats = {
-        "pred_a_r_min": float(pred_r.min()), "pred_a_r_max": float(pred_r.max()),
-        "pred_a_r_mean": float(pred_r.mean()), "pred_a_r_std": float(pred_r.std()),
-        "pred_a_theta_min": float(pred_theta.min()), "pred_a_theta_max": float(pred_theta.max()),
-        "pred_a_theta_mean": float(pred_theta.mean()), "pred_a_theta_std": float(pred_theta.std()),
-        "pred_a_phi_min": float(pred_phi.min()), "pred_a_phi_max": float(pred_phi.max()),
-        "pred_a_phi_mean": float(pred_phi.mean()), "pred_a_phi_std": float(pred_phi.std()),
-        "pred_a_mag_min": float(pred_mag.min()), "pred_a_mag_max": float(pred_mag.max()),
-        "pred_a_mag_mean": float(pred_mag.mean()), "pred_a_mag_std": float(pred_mag.std()),
+        "pred_U_min": float(U_pred.min()), "pred_U_max": float(U_pred.max()),
+        "pred_U_mean": float(U_pred.mean()), "pred_U_std": float(U_pred.std()),
+        "pred_a_theta_min": float(a_theta_mGal.min()), "pred_a_theta_max": float(a_theta_mGal.max()),
+        "pred_a_theta_mean": float(a_theta_mGal.mean()), "pred_a_theta_std": float(a_theta_mGal.std()),
+        "pred_a_phi_min": float(a_phi_mGal.min()), "pred_a_phi_max": float(a_phi_mGal.max()),
+        "pred_a_phi_mean": float(a_phi_mGal.mean()), "pred_a_phi_std": float(a_phi_mGal.std()),
+        "pred_a_mag_min": float(a_mag_mGal.min()), "pred_a_mag_max": float(a_mag_mGal.max()),
+        "pred_a_mag_mean": float(a_mag_mGal.mean()), "pred_a_mag_std": float(a_mag_mGal.std()),
     }
 
-    true_vals = test_df["dg_total_mGal"].values
-    mse = mean_squared_error(true_vals, a_mag_mGal)
-    print(f"📊 MSE: {mse:.6e}")
-    # === Save predictions ===
+    # === Compute MSE per component ===
+    mse_u= mean_squared_error(true_u, U_pred)
+    mse_theta = mean_squared_error(true_theta, a_theta_mGal)
+    mse_phi = mean_squared_error(true_phi, a_phi_mGal)
+    mse_mag = mean_squared_error(true_mag, a_mag_mGal)
+    print(f"📊 MSE_U: {mse_u:.6e}")
+    print(f"📊 MSE_theta: {mse_theta:.6e}")
+    print(f"📊 MSE_phi:   {mse_phi:.6e}")
+    print(f"📊 MSE_mag:   {mse_mag:.6e}")
+
+    # === Save acceleration magnitude predictions ===
     preds_dir = os.path.join(base_dir, "Outputs", "Predictions")
     os.makedirs(preds_dir, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    lmax = config["lmax"]
+    model_name = os.path.splitext(os.path.basename(model_path))[0]
+    output_file = os.path.join(preds_dir, f"{model_name}_preds.npy".replace(",", ""))
 
-    npy_path = os.path.join(preds_dir, f"sh_siren_torch_lmax{lmax}_{timestamp}_preds.npy")
+    np.save(output_file, a_mag_mGal)
+    print(f"💾 Acceleration magnitude predictions saved to {output_file}")
 
-    np.save(npy_path, a_mag_mGal)
-
-    print(f"💾 Predictions saved:")
-    print(f"   • {npy_path}")
-
-
-    # === Combine into one report ===
-    report = {
-        "timestamp": timestamp,
+    # === Save metadata ===
+    meta = {
+        "model_file": os.path.basename(model_path),
+        "config_file": os.path.basename(config_path),
         "device": str(device),
-        "lmax": lmax,
-        "mse": mse,
-        "model_file": model_path,
-        "config_file": config_path,
-        "preds_file": npy_path,
-        "true_stats": true_stats,
-        "pred_stats": pred_stats
+        "lmax": config["lmax"],
+        "hidden_layers": config.get("hidden_layers", None),
+        "samples": len(test_df),
+        "mse_u_m2/s22": float(mse_u),
+        "mse_theta_mgal2": float(mse_theta),
+        "mse_phi_mgal2": float(mse_phi),
+        "mse_mag_mgal2": float(mse_mag),
+        **true_stats,
+        **pred_stats
     }
-    report_path = os.path.join(preds_dir, f"sh_siren_torch_lmax{lmax}_{timestamp}_test_report.json")
+
+    report_path = output_file.replace(".npy", "_test_report.json")
     with open(report_path, "w") as f:
-        json.dump(report, f, indent=4)
-    print(f"🧾 Test report saved to {report_path}")
+        json.dump(meta, f, indent=4)
 
 
 if __name__ == "__main__":

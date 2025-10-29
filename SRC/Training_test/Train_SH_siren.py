@@ -19,7 +19,7 @@ from SRC.Location_encoder.SH_siren import SH_SIREN, SHSirenScaler
 
 def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    data_path = os.path.join(base_dir, 'Data', 'Samples_2190-2_5.0M_r0_train.parquet')
+    data_path = os.path.join(base_dir, 'Data', 'Samples_10-2_1k_r0_train.parquet')
 
     df = pd.read_parquet(data_path)
 
@@ -29,13 +29,8 @@ def main():
     scaler.fit_potential(train_df["dV_m2_s2"].values)
 
     for subdf in [train_df, val_df]:
-        subdf["dV_m2_s2_scaled"] = scaler.scale_potential(subdf["dV_m2_s2"].values)
-        _, _, r_scaled = scaler.scale_inputs(
-            torch.tensor(subdf["lon"].values),
-            torch.tensor(subdf["lat"].values),
-            torch.tensor(subdf["radius_m"].values)
-        )
-        subdf["radius_bar"] = r_scaled.numpy()
+        subdf["a_theta_mps2"] = subdf["dg_theta_mGal"] * 1e-5
+        subdf["a_phi_mps2"] = subdf["dg_phi_mGal"] * 1e-5
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -43,14 +38,18 @@ def main():
         lon = torch.tensor(df["lon"].values, dtype=torch.float32)
         lat = torch.tensor(df["lat"].values, dtype=torch.float32)
         r = torch.tensor(df["radius_m"].values, dtype=torch.float32)
-        y = torch.tensor(df["dV_m2_s2_scaled"].values, dtype=torch.float32).unsqueeze(1)
-        return lon, lat, r, y
+        y = torch.tensor(df["dV_m2_s2"].values, dtype=torch.float32).unsqueeze(1)
+        a_true = torch.tensor(
+            df[["a_theta_mps2", "a_phi_mps2"]].values,
+            dtype=torch.float32
+        )
+        return lon, lat, r, y, a_true
 
-    lon_train, lat_train, r_train, y_train = df_to_tensors(train_df)
-    lon_val, lat_val, r_val, y_val = df_to_tensors(val_df)
+    lon_train, lat_train, r_train, y_train, a_train = df_to_tensors(train_df)
+    lon_val, lat_val, r_val, y_val, a_val = df_to_tensors(val_df)
 
-    train_dataset = TensorDataset(lon_train, lat_train, r_train, y_train)
-    val_dataset = TensorDataset(lon_val, lat_val, r_val, y_val)
+    train_dataset = TensorDataset(lon_train, lat_train, r_train, y_train, a_train)
+    val_dataset = TensorDataset(lon_val, lat_val, r_val, y_val, a_val)
 
     # num_workers = max(1, os.cpu_count() // 2) uncomment in GPU
     train_loader = DataLoader(
@@ -88,42 +87,99 @@ def main():
         scaler=scaler
     )
 
-    criterion = nn.MSELoss()
+    criterion_val = nn.MSELoss()  # for potential value loss
+    alpha = 1.0
+    beta = 50.0
+
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 
-    epochs = 1
+    epochs = 500
     train_losses = []
     val_losses = []
+
     for epoch in range(epochs):
         epoch_start = time.time()
         model.train()
         train_loss = 0.0
 
-        for lon_b, lat_b, r_b, y_b in train_loader:
+        for lon_b, lat_b, r_b, y_b, a_true_b in train_loader:
             lon_b = lon_b.to(device)
             lat_b = lat_b.to(device)
             r_b = r_b.to(device)
             y_b = y_b.to(device)
+            a_true_b = a_true_b.to(device)
+
+            # === Diagnostic printout (only for first few batches) ===
+            if epoch == 0 and train_loss == 0.0:  # only print once per epoch or batch
+                r_bar = r_b / scaler.r_scale if scaler.r_scale else r_b
+                print("──── DIAGNOSTIC ────")
+                print(f"lon range: {lon_b.min():.3f} → {lon_b.max():.3f}")
+                print(f"lat range: {lat_b.min():.3f} → {lat_b.max():.3f}")
+                print(f"r range:   {r_b.min():.3e} → {r_b.max():.3e}")
+                print(f"r_bar range: {r_bar.min():.6f} → {r_bar.max():.6f}")
+                print(f"mean(r): {r_b.mean():.3e}  std(r): {r_b.std():.3e}")
+                print(f"mean(y): {y_b.mean():.3e}  std(y): {y_b.std():.3e}")
+                print("────────────────────")
 
             optimizer.zero_grad()
-            y_pred = model(lon_b, lat_b, r_b)
-            loss = criterion(y_pred, y_b)
+
+            # === Forward pass with gradients ===
+            y_pred, grads_scaled = model(lon_b, lat_b, r_b, return_gradients=True, physical_units=False)
+
+            # === Gradient diagnostics ===
+            if epoch == 0 and train_loss == 0.0:
+                with torch.no_grad():
+                    grad_norms = [g.abs().mean().item() for g in grads_scaled]
+                    print(f"grad mean norms (scaled): dU/dlon={grad_norms[0]:.3e}, "
+                          f"dU/dlat={grad_norms[1]:.3e}")
+
+            # Unscale gradients
+            g_lon, g_lat, _ = scaler.unscale_acceleration(grads_scaled)  # g_r unused
+            g_AD = torch.stack([g_lon, g_lat], dim=1)
+
+            loss_val = criterion_val(y_pred, scaler.scale_potential(y_b))
+            loss_grad = torch.mean((a_true_b + g_AD) ** 2)
+            loss = alpha * loss_val + beta * loss_grad
+
+            # Check for NaNs before backward
+            if torch.isnan(loss):
+                print("⚠️ NaN detected in loss. "
+                      f"Loss_val={loss_val.item():.3e}, "
+                      f"Loss_grad={loss_grad.item():.3e}")
+                break
+
             loss.backward()
             optimizer.step()
+
             train_loss += loss.item()
 
         avg_train_loss = train_loss / len(train_loader)
 
+        # === Validation ===
         model.eval()
         val_loss = 0.0
-        with torch.no_grad():
-            for lon_b, lat_b, r_b, y_b in val_loader:
-                lon_b = lon_b.to(device)
-                lat_b = lat_b.to(device)
-                r_b = r_b.to(device)
-                y_b = y_b.to(device)
-                y_pred = model(lon_b, lat_b, r_b)
-                val_loss += criterion(y_pred, y_b).item()
+
+        for lon_b, lat_b, r_b, y_b, a_true_b in val_loader:
+            lon_b, lat_b, r_b = lon_b.to(device), lat_b.to(device), r_b.to(device)
+            y_b, a_true_b = y_b.to(device), a_true_b.to(device)
+
+            lon_b.requires_grad_(True)
+            lat_b.requires_grad_(True)
+            r_b.requires_grad_(True)
+
+            # === Forward pass ===
+            y_pred, grads_scaled = model(lon_b, lat_b, r_b, return_gradients=True, physical_units=False)
+
+            # === Convert to physical gradients ===
+            g_lon, g_lat, _ = scaler.unscale_acceleration(grads_scaled)
+            g_AD = torch.stack([g_lon, g_lat], dim=1)
+
+            # === Loss computation ===
+            loss_val = criterion_val(y_pred, scaler.scale_potential(y_b))
+            loss_grad = torch.mean((a_true_b + g_AD) ** 2)
+
+            loss = alpha * loss_val + beta * loss_grad
+            val_loss += loss.item()
 
         avg_val_loss = val_loss / len(val_loader)
         train_losses.append(avg_train_loss)
@@ -132,6 +188,8 @@ def main():
 
         print(
             f"Epoch [{epoch + 1}/{epochs}] - Train: {avg_train_loss:.6f} | Val: {avg_val_loss:.6f} | Time: {epoch_time:.1f}s")
+
+
 
     outputs_dir = os.path.join(base_dir, "Outputs")
     save_dir = os.path.join(outputs_dir, "Models")
