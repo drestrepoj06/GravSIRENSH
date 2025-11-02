@@ -71,7 +71,7 @@ def main():
 
     lmax = 10
     hidden_features = 8
-    hidden_layers = 2
+    hidden_layers = 20
     out_features = 1
     first_omega_0 = 20
     hidden_omega_0 = 1.0
@@ -93,7 +93,7 @@ def main():
 
     optimizer = torch.optim.Adam(model.parameters(), lr=6e-4)
 
-    epochs = 50
+    epochs = 500
     train_losses = []
     val_losses = []
 
