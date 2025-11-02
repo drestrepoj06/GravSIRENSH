@@ -6,7 +6,7 @@ jhonr
 import torch
 import torch.nn as nn
 from SRC.Location_encoder.SH_embedding import SHEmbedding
-from SRC.Location_encoder.Siren import SIRENNet
+from SRC.Location_encoder.Siren import SIRENNet, LINEAR
 import numpy as np
 
 # Scaling target outputs in the range [-1, 1],
@@ -64,7 +64,7 @@ class SHSirenScaler:
         else:
             dU_dr_phys = None
 
-        return (dU_dlon_phys, dU_dlat_phys, dU_dr_phys)
+        return dU_dlon_phys, dU_dlat_phys, dU_dr_phys
 
 # Based on the code https://github.com/MarcCoru/locationencoder/blob/main/locationencoder/locationencoder.py
 # But only for the encoder SH + Siren network
@@ -72,8 +72,7 @@ class SHSirenScaler:
 class SH_SIREN(nn.Module):
     def __init__(self, lmax=10, hidden_features=128, hidden_layers=4, out_features=1,
                  first_omega_0=30.0, hidden_omega_0=1.0, device='cuda',
-                 normalization="4pi", cache_path=None, scaler=None,
-                 df=None):
+                 normalization="4pi", cache_path=None, scaler=None):
         super().__init__()
         self.device = device
         self.scaler = scaler
@@ -110,7 +109,7 @@ class SH_SIREN(nn.Module):
         return_gradients: if True, return U and grads (autograd)
         """
         # build differentiable embedding
-        Y = self.embedding(lon, lat, r, idx=idx)
+        Y = self.embedding(lon, lat)
         Y = Y.to(self.device)
 
         # forward pass
@@ -134,5 +133,56 @@ class SH_SIREN(nn.Module):
         grads_phys = self.scaler.unscale_acceleration(grads)
         return U_scaled, grads_phys
 
+class SH_LINEAR(nn.Module):
+    """
+    Full SH_LINEAR model = SphericalHarmonics embedding + Linear network
+    Mimics the classical spherical harmonic expansion structure.
+    """
+    def __init__(self, lmax = 10, out_features=1, device = 'cuda', normalization="4pi", cache_path=None, scaler=None):
+        super().__init__()
+        self.device = device
+        self.scaler = scaler
+        self.lmax = lmax
+        self.normalization = normalization
+        self.cache_path = cache_path
+        self.embedding = self.embedding = SHEmbedding(
+            lmax=lmax,
+            normalization=normalization,
+            cache_path=cache_path,
+            use_theta_lut=True,
+            n_theta=18001,
+        )
+        in_features = (lmax + 1) ** 2
+        self.linear = LINEAR(in_features=in_features, out_features=out_features, bias=False)
+
+    def forward(self, lon, lat, return_gradients=False, r=None, idx=None):
+        """
+        lon, lat: torch tensors in degrees
+        return_gradients: if True, return U and grads (autograd)
+        """
+        # build differentiable embedding
+        Y = self.embedding(lon, lat)
+        Y = Y.to(self.device)
+
+        # forward pass
+        U_scaled = self.linear(Y)
+
+        if not return_gradients:
+            return U_scaled
+
+        # compute autograd gradients (acceleration)
+        grads = torch.autograd.grad(
+            outputs=U_scaled,
+            inputs=[lon, lat, r] if r is not None else [lon, lat],
+            grad_outputs=torch.ones_like(U_scaled),
+            create_graph=True,
+            retain_graph=True,
+            only_inputs=True,
+            allow_unused=True
+        )
+
+        # rescale to physical units
+        grads_phys = self.scaler.unscale_acceleration(grads)
+        return U_scaled, grads_phys
 
 

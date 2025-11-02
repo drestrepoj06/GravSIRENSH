@@ -20,11 +20,6 @@ def _amp_worker(th_deg, lmax, normalization):
 
 
 class SHEmbedding:
-    """
-    Two data paths:
-      1) (Old) Per-sample cache A_cache[N_samples, S_amp]  -> slice by idx      (not differentiable wrt lat)
-      2) (New) θ-LUT A_lut[n_theta, S_amp] + differentiable 1D interpolation   (differentiable wrt lat)
-    """
     def __init__(self, lmax=10, normalization="4pi", cache_path=None,
                  use_theta_lut=True, n_theta=18001):
         self.lmax = lmax
@@ -33,11 +28,9 @@ class SHEmbedding:
         self.use_theta_lut = use_theta_lut
         self.n_theta = n_theta
 
-        self.A_cache = None   # (optional) per-sample cache
-        self.A_lut = None     # (n_theta, S_amp) θ-LUT
-        self.theta_grid = None  # (n_theta,) radians
+        self.A_lut = None
+        self.theta_grid = None
 
-    # ---------- θ-LUT build/load ----------
     def _lut_paths(self):
         base, ext = os.path.splitext(self.cache_path or "cache_amp")
         if not ext:
@@ -50,26 +43,21 @@ class SHEmbedding:
         """Build a θ-LUT once: A_lut[n_theta, S_amp], theta_grid[n_theta]."""
         lut_file, grid_file = self._lut_paths()
         if (not force) and os.path.exists(lut_file) and os.path.exists(grid_file):
-            # load
-            self.A_lut = torch.from_numpy(np.load(lut_file, mmap_mode="r")).float()
+            self.A_lut = torch.from_numpy(np.load(lut_file)).float()
             self.theta_grid = torch.from_numpy(np.load(grid_file)).float()
             return
 
         print(f"⚙️ Building θ-LUT for lmax={self.lmax} with n_theta={self.n_theta} ...")
-        # θ in radians and degrees
         theta_grid = torch.linspace(0.0, torch.pi, self.n_theta)  # [0, π]
         theta_deg = (theta_grid * 180.0 / np.pi).cpu().numpy()
 
-        # Parallel compute amplitudes per θ
         n_proc = min(os.cpu_count(), 8)
         with mp.Pool(processes=n_proc) as pool:
             results = pool.starmap(
                 _amp_worker,
                 [(thd, self.lmax, self.normalization) for thd in theta_deg]
             )
-        A_lut = np.vstack(results).astype(np.float32)  # (n_theta, S_amp)
-
-        # Save and keep Torch copies on CPU (move to device on forward)
+        A_lut = np.vstack(results).astype(np.float32)
         np.save(lut_file, A_lut)
         np.save(grid_file, theta_grid.cpu().numpy())
         print(f"💾 Saved LUT: {lut_file} and grid: {grid_file}")
@@ -77,12 +65,10 @@ class SHEmbedding:
         self.A_lut = torch.from_numpy(A_lut).float()
         self.theta_grid = theta_grid.float()
 
-    # ---------- differentiable 1D interpolation ----------
     @torch.no_grad()
     def _prepare_lut(self, device):
         if self.A_lut is None or self.theta_grid is None:
             self.build_theta_lut()
-        # keep a device copy (lazy move)
         self._A_lut_dev = self.A_lut.to(device, non_blocking=True)
         self._theta_grid_dev = self.theta_grid.to(device, non_blocking=True)
 
@@ -92,9 +78,8 @@ class SHEmbedding:
         theta_rad: (N,) radians in [0, π]
         Returns A_batch: (N, S_amp)
         """
-        device = theta_rad.device
-        A_lut = self._A_lut_dev   # (nθ, S_amp)
-        grid = self._theta_grid_dev  # (nθ,)
+        A_lut = self._A_lut_dev
+        grid = self._theta_grid_dev
 
         # Clamp theta to grid
         th = torch.clamp(theta_rad, 0.0, torch.pi - 1e-12)
@@ -121,8 +106,7 @@ class SHEmbedding:
         A = A0 + t.unsqueeze(1) * (A1 - A0)
         return A
 
-    # ---------- main forward ----------
-    def forward(self, lon, lat, r=None, idx=None):
+    def forward(self, lon, lat):
         """
         If use_theta_lut=True -> differentiable wrt lat via LUT interpolation.
         Else, fall back to per-sample cache (needs idx), not differentiable wrt lat.
@@ -138,8 +122,6 @@ class SHEmbedding:
             self._prepare_lut(device)
             A_pack = self._interp_A_theta(theta)   # (N, S_amp) differentiable
 
-
-        # Assemble full SH with sin/cos (differentiable wrt phi, and wrt theta if LUT path)
         Y = self._assemble_torch(phi, A_pack, self.lmax)
         return Y
 
@@ -164,5 +146,4 @@ class SHEmbedding:
                 col += 1
         return Y
 
-    # Keep __call__ alias
     __call__ = forward

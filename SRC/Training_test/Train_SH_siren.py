@@ -10,7 +10,7 @@ from datetime import datetime
 import json
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.Location_encoder.SH_siren import SH_SIREN, SHSirenScaler
+from SRC.Location_encoder.SH_siren import SH_SIREN, SHSirenScaler, SH_LINEAR
 # from SRC.Models.SH_embedding import SHEmbedding
 
 
@@ -72,18 +72,34 @@ def main():
     hidden_omega_0 = 1.0
     cache_path = os.path.join(base_dir, "Data", "cache_train.npy")
 
-    model = SH_SIREN(
-        lmax=lmax,
-        hidden_features=hidden_features,
-        hidden_layers=hidden_layers,
-        out_features=out_features,
-        first_omega_0=first_omega_0,
-        hidden_omega_0=hidden_omega_0,
-        device=device,
-        scaler=scaler,
-        cache_path=cache_path,
-        df=df,
-    )
+    model_type = "linear"
+
+    if model_type.lower() == "siren":
+        model = SH_SIREN(
+            lmax=lmax,
+            hidden_features=hidden_features,
+            hidden_layers=hidden_layers,
+            out_features=out_features,
+            first_omega_0=first_omega_0,
+            hidden_omega_0=hidden_omega_0,
+            device=device,
+            scaler=scaler,
+            cache_path=cache_path
+        )
+        print("🌀 Using SH-SIREN model")
+
+    elif model_type.lower() == "linear":
+        model = SH_LINEAR(
+            lmax=lmax,
+            out_features=out_features,
+            device=device,
+            scaler=scaler,
+            cache_path=cache_path
+        )
+        print("📈 Using SH-LINEAR model (classical expansion)")
+
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
@@ -97,7 +113,6 @@ def main():
         model.train()
         train_loss = 0.0
 
-        # ---------------- TRAIN ----------------
         for lon_b, lat_b, idx_b, y_b in train_loader:
             optimizer.zero_grad(set_to_none=True)
 
@@ -105,7 +120,7 @@ def main():
             y_pred = model(
                 lon_b.to(device),
                 lat_b.to(device),
-                idx=idx_b.to(device)  # 👈 pass index for amplitude slice
+                idx=idx_b.to(device)
             )
 
             loss = criterion(y_pred, y_true)
@@ -115,7 +130,6 @@ def main():
 
         avg_train_loss = train_loss / len(train_loader)
 
-        # ---------------- VALIDATION ----------------
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
@@ -145,9 +159,18 @@ def main():
     os.makedirs(outputs_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    model_name = f"sh_siren_pyshtools_lmax{model.lmax}_{timestamp}"
-    save_path = os.path.join(outputs_dir, f"{model_name}.pth")
+    if isinstance(model, SH_SIREN):
+        model_label = "sh_siren"
+    elif isinstance(model, SH_LINEAR):
+        model_label = "sh_linear"
+    else:
+        model_label = "unknown"
 
+    # Build model name dynamically
+    model_name = f"{model_label}_pyshtools_lmax{model.lmax}_{timestamp}"
+
+    # Save paths
+    save_path = os.path.join(outputs_dir, f"{model_name}.pth")
     np.save(os.path.join(outputs_dir, f"{model_name}_train_losses.npy"), np.array(train_losses))
     np.save(os.path.join(outputs_dir, f"{model_name}_val_losses.npy"), np.array(val_losses))
 
@@ -162,16 +185,13 @@ def main():
     config = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "device": str(device),
+        "model_type": model_type,
         "lmax": lmax,
-        "hidden_features": hidden_features,
-        "hidden_layers": hidden_layers,
         "out_features": out_features,
-        "first_omega_0": first_omega_0,
-        "hidden_omega_0": hidden_omega_0,
         "scaler": {
-                    "U_min": float(scaler.U_min),
-                    "U_max": float(scaler.U_max),
-                },
+            "U_min": float(scaler.U_min),
+            "U_max": float(scaler.U_max),
+        },
         "training": {
             "epochs": epochs,
             "train_samples": len(train_df),
@@ -185,6 +205,14 @@ def main():
             "val_losses": os.path.join(outputs_dir, f"{model_name}_val_losses.npy"),
         },
     }
+
+    if model_type.lower() == "siren":
+        config.update({
+            "hidden_features": hidden_features,
+            "hidden_layers": hidden_layers,
+            "first_omega_0": first_omega_0,
+            "hidden_omega_0": hidden_omega_0,
+        })
 
     config_path = os.path.join(outputs_dir, f"{model_name}_model_config.json")
     with open(config_path, "w") as f:

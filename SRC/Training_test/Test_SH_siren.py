@@ -9,7 +9,7 @@ import time
 from datetime import datetime
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.Location_encoder.SH_siren import SH_SIREN, SHSirenScaler
+from SRC.Location_encoder.SH_siren import SH_SIREN, SHSirenScaler, SH_LINEAR
 
 def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
@@ -53,18 +53,32 @@ def main():
 
     cache_path = os.path.join(base_dir, "Data", "cache_test")
 
-    model = SH_SIREN(
-        lmax=config["lmax"],
-        hidden_features=config["hidden_features"],
-        hidden_layers=config["hidden_layers"],
-        out_features=config["out_features"],
-        first_omega_0=config["first_omega_0"],
-        hidden_omega_0=config["hidden_omega_0"],
-        device=device,
-        scaler=scaler,
-        cache_path=cache_path,
-        df = test_df
-    )
+    if config["model_type"].lower() == "siren":
+        model = SH_SIREN(
+            lmax=config["lmax"],
+            hidden_features=config["hidden_features"],
+            hidden_layers=config["hidden_layers"],
+            out_features=config["out_features"],
+            first_omega_0=config["first_omega_0"],
+            hidden_omega_0=config["hidden_omega_0"],
+            device=device,
+            scaler=scaler,
+            cache_path=cache_path
+        )
+        print("🌀 Loaded SH-SIREN model for testing")
+
+    elif config["model_type"].lower() == "linear":
+        model = SH_LINEAR(
+            lmax=config["lmax"],
+            out_features=config["out_features"],
+            device=device,
+            scaler=scaler,
+            cache_path=cache_path
+        )
+        print("📈 Loaded SH-LINEAR model for testing")
+
+    else:
+        raise ValueError(f"Unknown model type: {config['model_type']}")
 
     model.load_state_dict(checkpoint["state_dict"])
     model.to(device)
@@ -76,9 +90,7 @@ def main():
     true_phi = test_df["dg_phi_mGal"].values
     true_mag = test_df["dg_total_mGal"].values
 
-    # ───────────────────────────────
-    # Predict accelerations via autograd
-    # ───────────────────────────────
+
     print("⚙️ Computing potential and accelerations via autograd...")
 
     lon = torch.tensor(test_df["lon"].values, dtype=torch.float32, device=device, requires_grad=True)
