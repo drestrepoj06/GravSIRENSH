@@ -2,139 +2,167 @@
 jhonr"""
 
 import numpy as np
-import pandas as pd
 import pyshtools as pysh
 import multiprocessing as mp
 import os
+import torch
 
 
-def _sh_worker(th, ph, lmax, normalization):
-    """Worker for parallel spherical harmonic computation (single point)."""
-    ylm = pysh.expand.spharm(lmax, th, ph, normalization=normalization, kind="real")
-    y_list = []
+def _amp_worker(th_deg, lmax, normalization):
+    # A_{l,m}(theta) = N_{l,m} P_l^m(cos theta), evaluated at phi=0 so cos-branch holds amplitudes
+    ylm = pysh.expand.spharm(lmax, th_deg, 0.0, normalization=normalization, kind="real")
+    # Pack [A_{0,0}, A_{1,0}, A_{1,1}, ..., A_{L,0},...,A_{L,L}]
+    A_list = []
     for l in range(lmax + 1):
-        for m in range(l, 0, -1):
-            y_list.append(ylm[1, l, m])
-        y_list.append(ylm[0, l, 0])
-        for m in range(1, l + 1):
-            y_list.append(ylm[0, l, m])
-    return np.array(y_list, dtype=np.float32)
+        A_l = [ylm[0, l, m] for m in range(l + 1)]  # cos-branch m=0..l
+        A_list.extend(A_l)
+    return np.array(A_list, dtype=np.float32)
 
 
 class SHEmbedding:
-    def __init__(self, lmax: int = 10, normalization: str = "4pi", cache_path: str = None):
+    """
+    Two data paths:
+      1) (Old) Per-sample cache A_cache[N_samples, S_amp]  -> slice by idx      (not differentiable wrt lat)
+      2) (New) θ-LUT A_lut[n_theta, S_amp] + differentiable 1D interpolation   (differentiable wrt lat)
+    """
+    def __init__(self, lmax=10, normalization="4pi", cache_path=None,
+                 use_theta_lut=True, n_theta=18001):
         self.lmax = lmax
         self.normalization = normalization
         self.cache_path = cache_path
+        self.use_theta_lut = use_theta_lut
+        self.n_theta = n_theta
 
-    def merge_chunks(self, chunk_files, final_path=None, delete_after=False):
-        """Safely merge partial .npy chunks into one valid file (memory-mapped)."""
-        if final_path is None:
-            base, ext = os.path.splitext(self.cache_path or "cache_basis")
-            if not ext:
-                ext = ".npy"
-            final_path = f"{base}_lmax{self.lmax}{ext}"
+        self.A_cache = None   # (optional) per-sample cache
+        self.A_lut = None     # (n_theta, S_amp) θ-LUT
+        self.theta_grid = None  # (n_theta,) radians
 
-        print(f"🧩 Merging {len(chunk_files)} chunks into {final_path} ...")
-
-        # inspect first chunk
-        first = np.load(chunk_files[0], mmap_mode="r")
-        n_cols = first.shape[1]
-        dtype = first.dtype
-        total_rows = sum(np.load(f, mmap_mode="r").shape[0] for f in chunk_files)
-
-        # allocate output memmap
-        Y = np.lib.format.open_memmap(final_path, mode="w+", dtype=dtype, shape=(total_rows, n_cols))
-
-        # sequential copy
-        offset = 0
-        for i, f in enumerate(chunk_files):
-            arr = np.load(f, mmap_mode="r")
-            rows = arr.shape[0]
-            Y[offset:offset + rows] = arr
-            offset += rows
-            print(f"   ✅ Chunk {i + 1}/{len(chunk_files)} merged ({rows} rows)")
-        del Y  # flush to disk
-
-        # optionally delete temporary chunks
-        if delete_after:
-            for f in chunk_files:
-                try:
-                    os.remove(f)
-                except OSError:
-                    pass
-
-        print(f"💾 Merged cache saved to {final_path}")
-        return final_path
-
-    def from_dataframe(self, df: pd.DataFrame, lon_col="lon", lat_col="lat",
-                       use_cache=True, parallel=True, vectorized=False,
-                       chunked=False, chunk_size=500_000, delete_after=True):
-        """Compute or load SH basis from a DataFrame of lon/lat points."""
-        lon = df[lon_col].values
-        lat = df[lat_col].values
-
-        base, ext = os.path.splitext(self.cache_path or "cache_basis")
+    # ---------- θ-LUT build/load ----------
+    def _lut_paths(self):
+        base, ext = os.path.splitext(self.cache_path or "cache_amp")
         if not ext:
             ext = ".npy"
-        cache_file = f"{base}_lmax{self.lmax}{ext}"
+        lut_file = f"{base}_ampsLUT_lmax{self.lmax}_n{self.n_theta}{ext}"
+        grid_file = f"{base}_theta_grid_n{self.n_theta}{ext}"
+        return lut_file, grid_file
 
-        # load cache if available
-        if use_cache:
-            # Look for exact match first
-            if os.path.exists(cache_file):
-                print(f"📂 Loading cached SH basis from {cache_file}")
-                return np.load(cache_file, mmap_mode="r")
+    def build_theta_lut(self, force=False):
+        """Build a θ-LUT once: A_lut[n_theta, S_amp], theta_grid[n_theta]."""
+        lut_file, grid_file = self._lut_paths()
+        if (not force) and os.path.exists(lut_file) and os.path.exists(grid_file):
+            # load
+            self.A_lut = torch.from_numpy(np.load(lut_file, mmap_mode="r")).float()
+            self.theta_grid = torch.from_numpy(np.load(grid_file)).float()
+            return
 
-            # Look for higher-degree cache to slice from
-            base, ext = os.path.splitext(self.cache_path or "cache_basis")
-            for l in range(self.lmax + 1, 2000):  # scan for possible larger files
-                candidate = f"{base}_lmax{l}{ext}"
-                if os.path.exists(candidate):
-                    print(f"🔎 Found higher-degree cache ({candidate}). Slicing down to lmax={self.lmax}.")
-                    Y_full = np.load(candidate, mmap_mode="r")
-                    n_basis = (self.lmax + 1) ** 2
-                    return Y_full[:, :n_basis]
+        print(f"⚙️ Building θ-LUT for lmax={self.lmax} with n_theta={self.n_theta} ...")
+        # θ in radians and degrees
+        theta_grid = torch.linspace(0.0, torch.pi, self.n_theta)  # [0, π]
+        theta_deg = (theta_grid * 180.0 / np.pi).cpu().numpy()
 
-        if chunked:
-            n = len(df)
-            chunks = (n + chunk_size - 1) // chunk_size
-            print(f"🧩 Chunked computation mode: {chunks} chunks (~{chunk_size:,} each)")
-
-            chunk_files = []
-            for i in range(chunks):
-                print(f"🧩 Processing chunk {i + 1}/{chunks}")
-                df_chunk = df.iloc[i * chunk_size:(i + 1) * chunk_size]
-                cache_i = f"{base}_part{i:02d}_lmax{self.lmax}{ext}"
-                Y = self._compute_basis(df_chunk[lon_col].values)
-                np.save(cache_i, Y.astype(np.float32))
-                chunk_files.append(cache_i)
-                del Y
-
-            merged_file = self.merge_chunks(chunk_files, final_path=cache_file, delete_after=delete_after)
-            print(f"✅ Final merged cache: {merged_file}")
-            return np.load(cache_file, mmap_mode="r")
-
-        # --- single-shot mode ---
-        print(f"⚙️ Computing SH basis for {len(df):,} samples (lmax={self.lmax}) ...")
-        Y = self._compute_basis(lon, lat)
-        np.save(cache_file, Y.astype(np.float32))
-        print(f"💾 Cached SH basis saved to {cache_file}")
-        return Y
-
-    def _compute_basis(self, lon, lat):
-        return self._compute_basis_parallel(lon, lat)
-
-
-
-    def _compute_basis_parallel(self, lon, lat):
-        theta = 90.0 - lat
-        n_proc = min(4, os.cpu_count())
+        # Parallel compute amplitudes per θ
+        n_proc = min(os.cpu_count(), 8)
         with mp.Pool(processes=n_proc) as pool:
             results = pool.starmap(
-                _sh_worker,
-                [(th, ph, self.lmax, self.normalization) for th, ph in zip(theta, lon)]
+                _amp_worker,
+                [(thd, self.lmax, self.normalization) for thd in theta_deg]
             )
-        return np.vstack(results).astype(np.float32)
+        A_lut = np.vstack(results).astype(np.float32)  # (n_theta, S_amp)
+
+        # Save and keep Torch copies on CPU (move to device on forward)
+        np.save(lut_file, A_lut)
+        np.save(grid_file, theta_grid.cpu().numpy())
+        print(f"💾 Saved LUT: {lut_file} and grid: {grid_file}")
+
+        self.A_lut = torch.from_numpy(A_lut).float()
+        self.theta_grid = theta_grid.float()
+
+    # ---------- differentiable 1D interpolation ----------
+    @torch.no_grad()
+    def _prepare_lut(self, device):
+        if self.A_lut is None or self.theta_grid is None:
+            self.build_theta_lut()
+        # keep a device copy (lazy move)
+        self._A_lut_dev = self.A_lut.to(device, non_blocking=True)
+        self._theta_grid_dev = self.theta_grid.to(device, non_blocking=True)
+
+    def _interp_A_theta(self, theta_rad):
+        """
+        Differentiable linear interpolation of A(theta) from θ-LUT.
+        theta_rad: (N,) radians in [0, π]
+        Returns A_batch: (N, S_amp)
+        """
+        device = theta_rad.device
+        A_lut = self._A_lut_dev   # (nθ, S_amp)
+        grid = self._theta_grid_dev  # (nθ,)
+
+        # Clamp theta to grid
+        th = torch.clamp(theta_rad, 0.0, torch.pi - 1e-12)
+
+        # searchsorted upper index
+        # Note: torch.searchsorted requires grid 1D ascending
+        idx_hi = torch.searchsorted(grid, th, right=False)
+        idx_hi = torch.clamp(idx_hi, 1, grid.numel() - 1)
+        idx_lo = idx_hi - 1
+
+        th0 = grid[idx_lo]     # (N,)
+        th1 = grid[idx_hi]     # (N,)
+        denom = (th1 - th0)
+        # safe to avoid /0 if two grid points equal (should not happen with linspace)
+        denom = torch.where(denom > 0, denom, torch.ones_like(denom))
+
+        t = (th - th0) / denom  # (N,)
+
+        # Gather rows
+        A0 = A_lut[idx_lo, :]   # (N, S_amp)
+        A1 = A_lut[idx_hi, :]   # (N, S_amp)
+
+        # Linear interpolation (differentiable wrt th via t)
+        A = A0 + t.unsqueeze(1) * (A1 - A0)
+        return A
+
+    # ---------- main forward ----------
+    def forward(self, lon, lat, r=None, idx=None):
+        """
+        If use_theta_lut=True -> differentiable wrt lat via LUT interpolation.
+        Else, fall back to per-sample cache (needs idx), not differentiable wrt lat.
+        """
+        lon = lon.to(torch.float32)
+        lat = lat.to(torch.float32)
+        device = lon.device
+
+        phi = torch.deg2rad(lon)                   # (N,)
+        theta = torch.deg2rad(90.0 - lat)          # (N,)
+
+        if self.use_theta_lut:
+            self._prepare_lut(device)
+            A_pack = self._interp_A_theta(theta)   # (N, S_amp) differentiable
 
 
+        # Assemble full SH with sin/cos (differentiable wrt phi, and wrt theta if LUT path)
+        Y = self._assemble_torch(phi, A_pack, self.lmax)
+        return Y
+
+    def _assemble_torch(self, phi, A_pack, lmax):
+        N = A_pack.shape[0]
+        Y = torch.empty((N, (lmax + 1) ** 2), dtype=torch.float32, device=phi.device)
+        m_grid = torch.arange(lmax + 1, dtype=torch.float32, device=phi.device)  # 0..L
+        sin_mphi = torch.sin(phi[:, None] * m_grid[None, :])
+        cos_mphi = torch.cos(phi[:, None] * m_grid[None, :])
+
+        col = 0
+        amp_col = 0
+        for l in range(lmax + 1):
+            A_l = A_pack[:, amp_col:amp_col + (l + 1)]  # (N, l+1)
+            amp_col += (l + 1)
+            for m in range(l, 0, -1):
+                Y[:, col] = A_l[:, m] * sin_mphi[:, int(m)]
+                col += 1
+            Y[:, col] = A_l[:, 0]; col += 1
+            for m in range(1, l + 1):
+                Y[:, col] = A_l[:, m] * cos_mphi[:, int(m)]
+                col += 1
+        return Y
+
+    # Keep __call__ alias
+    __call__ = forward

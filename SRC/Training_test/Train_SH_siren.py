@@ -29,17 +29,11 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     # --- Scaler for target variable ---
-    scaler = SHSirenScaler(r_scale=6378136.3)
-    scaler.fit_target(train_df["dg_total_mGal"].values, target_name="dg", target_units="m/s²")
+    scaler = SHSirenScaler()
+    scaler.fit_potential(train_df["dV_m2_s2"].values)
 
     for subdf in [train_df, val_df]:
-        subdf["dg_scaled"] = scaler.scale_target(subdf["dg_total_mGal"].values)
-        _, _, r_scaled = scaler.scale_inputs(
-            torch.tensor(subdf["lon"].values),
-            torch.tensor(subdf["lat"].values),
-            torch.tensor(subdf["radius_m"].values),
-        )
-        subdf["radius_bar"] = r_scaled.numpy()
+        subdf["V_scaled"] = scaler.scale_potential(subdf["dV_m2_s2"].values)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"🧠 Using device: {device}")
@@ -48,26 +42,24 @@ def main():
     def df_to_tensors(df):
         lon = torch.tensor(df["lon"].values, dtype=torch.float32)
         lat = torch.tensor(df["lat"].values, dtype=torch.float32)
-        r = torch.tensor(df["radius_m"].values, dtype=torch.float32)
         idx = torch.tensor(df["orig_index"].values, dtype=torch.long)
-        y = torch.tensor(df["dg_scaled"].values, dtype=torch.float32).unsqueeze(1)
-        return lon, lat, r, idx, y
+        y = torch.tensor(df["dV_m2_s2"].values, dtype=torch.float32).unsqueeze(1)  # or your scaled target
+        return lon, lat, idx, y
 
-    lon_train, lat_train, r_train, idx_train, y_train = df_to_tensors(train_df)
-    lon_val, lat_val, r_val, idx_val, y_val = df_to_tensors(val_df)
+    lon_train, lat_train, idx_train, y_train = df_to_tensors(train_df)
+    lon_val, lat_val, idx_val, y_val = df_to_tensors(val_df)
 
     train_loader = DataLoader(
-        TensorDataset(lon_train, lat_train, r_train, idx_train, y_train),
+        TensorDataset(lon_train, lat_train, idx_train, y_train),
         batch_size=10240,
         shuffle=True,
-        num_workers=0,
         pin_memory=torch.cuda.is_available(),
     )
+
     val_loader = DataLoader(
-        TensorDataset(lon_val, lat_val, r_val, idx_val, y_val),
+        TensorDataset(lon_val, lat_val, idx_val, y_val),
         batch_size=10240,
         shuffle=False,
-        num_workers=0,
         pin_memory=torch.cuda.is_available(),
     )
 
@@ -78,8 +70,8 @@ def main():
     out_features = 1
     first_omega_0 = 20
     hidden_omega_0 = 1.0
+    cache_path = os.path.join(base_dir, "Data", "cache_train.npy")
 
-    cache_path = os.path.join(base_dir, "Data", "cache_basis_train.npy")
     model = SH_SIREN(
         lmax=lmax,
         hidden_features=hidden_features,
@@ -90,13 +82,14 @@ def main():
         device=device,
         scaler=scaler,
         cache_path=cache_path,
+        df=df,
     )
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=2, min_lr=1e-6)
 
-    epochs = 100
+    epochs = 1
     train_losses, val_losses = [], []
 
     for epoch in range(epochs):
@@ -104,29 +97,35 @@ def main():
         model.train()
         train_loss = 0.0
 
-        for lon_b, lat_b, r_b, idx_b, y_b in train_loader:
+        # ---------------- TRAIN ----------------
+        for lon_b, lat_b, idx_b, y_b in train_loader:
             optimizer.zero_grad(set_to_none=True)
 
-            batch_df = {"lon": lon_b, "lat": lat_b, "radius_m": r_b, "orig_index": idx_b}
-            Y = model.prepare_input(batch_df).detach()
-
             y_true = y_b.to(device)
-            y_pred = model.siren(Y)
+            y_pred = model(
+                lon_b.to(device),
+                lat_b.to(device),
+                idx=idx_b.to(device)  # 👈 pass index for amplitude slice
+            )
+
             loss = criterion(y_pred, y_true)
             loss.backward()
             optimizer.step()
-
             train_loss += loss.item()
 
         avg_train_loss = train_loss / len(train_loader)
 
+        # ---------------- VALIDATION ----------------
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            for lon_b, lat_b, r_b, idx_b, y_b in val_loader:
-                batch_df = {"lon": lon_b, "lat": lat_b, "radius_m": r_b, "orig_index": idx_b}
+            for lon_b, lat_b, idx_b, y_b in val_loader:
                 y_true = y_b.to(device)
-                y_pred = model(df=batch_df)
+                y_pred = model(
+                    lon_b.to(device),
+                    lat_b.to(device),
+                    idx=idx_b.to(device)
+                )
                 val_loss += criterion(y_pred, y_true).item()
 
         avg_val_loss = val_loss / len(val_loader)
@@ -136,7 +135,10 @@ def main():
         train_losses.append(avg_train_loss)
         val_losses.append(avg_val_loss)
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch [{epoch+1}/{epochs}] - Train: {avg_train_loss:.6f} | Val: {avg_val_loss:.6f} | LR: {current_lr:.2e} | Time: {epoch_time:.1f}s")
+
+        print(f"Epoch [{epoch + 1}/{epochs}] - "
+              f"Train: {avg_train_loss:.6f} | Val: {avg_val_loss:.6f} "
+              f"| LR: {current_lr:.2e} | Time: {epoch_time:.1f}s")
 
     # --- Save results ---
     outputs_dir = os.path.join(base_dir, "Outputs", "Models")
@@ -152,12 +154,9 @@ def main():
     torch.save({
         "state_dict": model.state_dict(),
         "scaler": {
-            "r_scale": scaler.r_scale,
-            "t_min": scaler.t_min,
-            "t_max": scaler.t_max,
-            "target_name": scaler.target_name,
-            "target_units": scaler.target_units,
-        },
+        "U_min": float(scaler.U_min),
+        "U_max": float(scaler.U_max),
+            }
     }, save_path)
 
     config = {
@@ -170,12 +169,9 @@ def main():
         "first_omega_0": first_omega_0,
         "hidden_omega_0": hidden_omega_0,
         "scaler": {
-            "r_scale": float(scaler.r_scale),
-            "t_min": float(scaler.t_min),
-            "t_max": float(scaler.t_max),
-            "target_name": scaler.target_name,
-            "target_units": scaler.target_units,
-        },
+                    "U_min": float(scaler.U_min),
+                    "U_max": float(scaler.U_max),
+                },
         "training": {
             "epochs": epochs,
             "train_samples": len(train_df),
