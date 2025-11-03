@@ -63,7 +63,6 @@ def main():
         pin_memory=torch.cuda.is_available(),
     )
 
-    # --- Model ---
     lmax = 10
     hidden_features = 8
     hidden_layers = 2
@@ -103,16 +102,27 @@ def main():
 
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=2, min_lr=1e-6)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, factor=0.5, patience=2, min_lr=1e-6
+    )
 
-    epochs = 1
+    epochs = 100
     train_losses, val_losses = [], []
+
+    best_val_loss = float("inf")
+    epochs_no_improve = 0
+    patience = 10  # number of epochs to wait before early stop
+    min_delta = 1e-5  # minimum improvement threshold
+    outputs_dir = os.path.join(base_dir, "Outputs", "Models")
+    os.makedirs(outputs_dir, exist_ok=True)
+    best_model_path = os.path.join(outputs_dir, f"{model_type}_best.pth")
 
     for epoch in range(epochs):
         epoch_start = time.time()
         model.train()
         train_loss = 0.0
 
+        # ---- Training loop ----
         for lon_b, lat_b, idx_b, y_b in train_loader:
             optimizer.zero_grad(set_to_none=True)
 
@@ -130,6 +140,7 @@ def main():
 
         avg_train_loss = train_loss / len(train_loader)
 
+        # ---- Validation loop ----
         model.eval()
         val_loss = 0.0
         with torch.no_grad():
@@ -150,13 +161,26 @@ def main():
         val_losses.append(avg_val_loss)
         current_lr = optimizer.param_groups[0]['lr']
 
+        # ---- Logging ----
         print(f"Epoch [{epoch + 1}/{epochs}] - "
               f"Train: {avg_train_loss:.6f} | Val: {avg_val_loss:.6f} "
               f"| LR: {current_lr:.2e} | Time: {epoch_time:.1f}s")
 
-    # --- Save results ---
-    outputs_dir = os.path.join(base_dir, "Outputs", "Models")
-    os.makedirs(outputs_dir, exist_ok=True)
+        # ---- Early stopping logic ----
+        if best_val_loss - avg_val_loss > min_delta:
+            best_val_loss = avg_val_loss
+            epochs_no_improve = 0
+            torch.save(model.state_dict(), best_model_path)
+            print(f"💾  Validation improved → model saved (ValLoss={avg_val_loss:.6f})")
+        else:
+            epochs_no_improve += 1
+            print(f"⚠️  No improvement ({epochs_no_improve}/{patience})")
+
+        if epochs_no_improve >= patience:
+            print(f"🛑 Early stopping at epoch {epoch + 1} — validation loss plateaued.")
+            break
+
+
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     if isinstance(model, SH_SIREN):

@@ -108,9 +108,7 @@ class SHEmbedding:
 
     def forward(self, lon, lat):
         """
-        If use_theta_lut=True -> differentiable wrt lat via LUT interpolation.
-        Else, fall back to per-sample cache (needs idx), not differentiable wrt lat.
-        """
+        If use_theta_lut=True -> differentiable wrt lat via LUT interpolation."""
         lon = lon.to(torch.float32)
         lat = lat.to(torch.float32)
         device = lon.device
