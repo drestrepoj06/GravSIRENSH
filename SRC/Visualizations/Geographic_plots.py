@@ -14,9 +14,6 @@ import re
 
 class GravityDataPlotter:
     def __init__(self, data_path, output_dir=None, predictions_dir=None, target_type="acceleration"):
-        """
-        target_type: 'acceleration' or 'potential'
-        """
         self.data_path = data_path
         self.sample_df = pd.read_parquet(data_path)
         self.filename = os.path.basename(data_path)
@@ -33,8 +30,6 @@ class GravityDataPlotter:
         self.predictions_dir = predictions_dir or os.path.abspath(
             os.path.join(os.path.dirname(data_path), '..', 'Outputs', 'Predictions')
         )
-
-        # Extract metadata
         self.lmax, self.lmax_base, self.n_samples, self.altitude, self.mode = self._parse_filename(self.filename)
 
         if self.target_type not in ["acceleration", "potential"]:
@@ -45,7 +40,6 @@ class GravityDataPlotter:
             else:
                 raise ValueError("Cannot determine target type from dataset.")
 
-        # Check for matching predictions
         self.preds_path = self._find_predictions_file()
         self.has_predictions = False
         if self.preds_path:
@@ -81,20 +75,20 @@ class GravityDataPlotter:
             return f"EGM2008 {symbol} (Lmax={self.lmax})"
 
     def _find_predictions_file(self):
-        pattern = os.path.join(self.predictions_dir, f"*_mag*.npy")
+        pattern = os.path.join(self.predictions_dir, f"*_U*.npy")
         matches = glob.glob(pattern)
         if matches:
             latest = max(matches, key=os.path.getmtime)
-            print(f"📂 Found predictions file: {os.path.basename(latest)}")
+            print(f"Found predictions file: {os.path.basename(latest)}")
             return latest
         else:
-            print("⚠️ No predictions file found for this dataset.")
+            print("No predictions file found for this dataset.")
             return None
 
     def _load_predictions(self):
         preds = np.load(self.preds_path)
         if len(preds) != len(self.sample_df):
-            print("⚠️ Prediction file length does not match test data.")
+            print("Prediction file length does not match test data.")
             return
 
         if self.target_type == "acceleration":
@@ -109,7 +103,7 @@ class GravityDataPlotter:
         self.sample_df[pred_col] = preds
         self.sample_df[f"error_{unit}"] = preds - self.sample_df[true_col]
         self.has_predictions = True
-        print(f"✅ Loaded {len(preds):,} predictions for target '{self.target_type}'.")
+        print(f"Loaded {len(preds):,} predictions for target '{self.target_type}'.")
 
     def _make_grid(self, value_col):
         lon_grid = np.linspace(0, 360, 720)
@@ -153,7 +147,7 @@ class GravityDataPlotter:
         output_filename = f"Map_{suffix}.png"
         output_path = os.path.join(self.output_dir, output_filename)
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        print(f"✅ Figure saved: {output_path}")
+        print(f"Figure saved: {output_path}")
         plt.close()
 
     def plot_density(self, axis="lat"):
@@ -185,7 +179,7 @@ class GravityDataPlotter:
         suffix = f"{self._fname_suffix()}_{self.mode}"
         output_path = os.path.join(self.output_dir, f"Density_{axis}_{suffix}.png")
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        print(f"✅ Density figure saved: {output_path}")
+        print(f"Density figure saved: {output_path}")
         plt.close()
 
     def plot_scatter(self, color_by=None, s=0.5, alpha=0.8, cmap="viridis"):
@@ -213,7 +207,7 @@ class GravityDataPlotter:
             suffix = f"{self._fname_suffix()}_{self.mode}_{self.target_type[:3]}"
             output_path = os.path.join(self.output_dir, f"Scatter_{suffix}.png")
             plt.savefig(output_path, dpi=300, bbox_inches="tight")
-            print(f"✅ Scatter figure saved: {output_path}")
+            print(f"Scatter figure saved: {output_path}")
             plt.close()
             return
 
@@ -249,7 +243,7 @@ class GravityDataPlotter:
         comp_suffix = f"{self._fname_suffix()}_modelL{model_lmax}_{timestamp}_{self.target_type}"
         output_path = os.path.join(self.output_dir, f"Scatter_Comparison_{comp_suffix}.png")
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        print(f"✅ Scatter comparison figure saved: {output_path}")
+        print(f"Scatter comparison figure saved: {output_path}")
         plt.close()
 
         plt.figure(figsize=(10, 5))
@@ -270,7 +264,7 @@ class GravityDataPlotter:
         pred_only_suffix = f"{self._fname_suffix()}_modelL{model_lmax}_{timestamp}_{self.target_type}"
         output_path_pred = os.path.join(self.output_dir, f"Scatter_Predicted_{pred_only_suffix}.png")
         plt.savefig(output_path_pred, dpi=300, bbox_inches="tight")
-        print(f"✅ Separate predictions figure saved: {output_path_pred}")
+        print(f"Separate predictions figure saved: {output_path_pred}")
         plt.close()
 
         plt.figure(figsize=(8, 5))
@@ -284,7 +278,7 @@ class GravityDataPlotter:
         hist_suffix = f"{self._fname_suffix()}_modelL{model_lmax}_{timestamp}_{self.target_type}"
         output_path_hist = os.path.join(self.output_dir, f"Histogram_Predicted_{hist_suffix}.png")
         plt.savefig(output_path_hist, dpi=300, bbox_inches="tight")
-        print(f"✅ Histogram of predictions saved: {output_path_hist}")
+        print(f"Histogram of predictions saved: {output_path_hist}")
         plt.close()
 
 
@@ -301,8 +295,8 @@ class GravityDataPlotter:
 
         latest_train = train_files[0]
         latest_test = test_files[0]
-        print(f"📂 Found latest train file: {os.path.basename(latest_train)}")
-        print(f"📂 Found latest test file:  {os.path.basename(latest_test)}")
+        print(f"Found latest train file: {os.path.basename(latest_train)}")
+        print(f"Found latest test file:  {os.path.basename(latest_test)}")
 
         train_plotter = cls(latest_train, output_dir, target_type=target_type)
         train_plotter.has_predictions = False
@@ -317,7 +311,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     # Choose target type here: 'acceleration' or 'potential'
-    target_type = "acceleration"
+    target_type = "potential"
 
     train_plotter, test_plotter = GravityDataPlotter.from_latest(data_dir, output_dir, target_type=target_type)
 
@@ -332,7 +326,7 @@ def main():
     #test_plotter.plot_density("lon")
     test_plotter.plot_scatter(s=0.3, alpha=0.6)
 
-    print("\n✅ All plots saved in:", output_dir)
+    print("\nAll plots saved in:", output_dir)
 
 
 if __name__ == "__main__":

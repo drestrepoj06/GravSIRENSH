@@ -58,10 +58,8 @@ class SHSirenScaler:
         else:
             r_phys = r
 
-        # convert degrees to radians
         lat_rad = lat * deg2rad
 
-        # Convert to physical derivatives (m²/s² per meter)
         dU_dlon_phys = S * (deg2rad / (r_phys * torch.cos(lat_rad))) * dU_dlon
         dU_dlat_phys = S * (deg2rad / r_phys) * dU_dlat
 
@@ -77,7 +75,7 @@ class SHSirenScaler:
         return dU_dlon_phys, dU_dlat_phys, dU_dr_phys
 
 # Based on the code https://github.com/MarcCoru/locationencoder/blob/main/locationencoder/locationencoder.py
-# But only for the encoder SH + Siren network
+# But only for the encoder SH + Siren network and the autograd of
 
 class SH_SIREN(nn.Module):
     def __init__(self, lmax=10, hidden_features=128, hidden_layers=4, out_features=1,
@@ -88,6 +86,7 @@ class SH_SIREN(nn.Module):
         self.scaler = scaler
         self.lmax = lmax
         self.normalization = normalization
+        self.out_features = int(out_features)
         self.cache_path = cache_path
 
         # Create embedding
@@ -99,21 +98,17 @@ class SH_SIREN(nn.Module):
             n_theta=18001,
         )
 
-        # Define SIREN
         n_basis = (lmax + 1) ** 2
         self.siren = SIRENNet(
             in_features=n_basis,
             hidden_features=hidden_features,
             hidden_layers=hidden_layers,
-            out_features=out_features,
+            out_features=self.out_features,
             first_omega_0=first_omega_0,
             hidden_omega_0=hidden_omega_0
         ).to(device)
 
-    # -----------------------------
-    # Forward pipeline
-    # -----------------------------
-    def forward(self, lon, lat, return_gradients=False,r = None, idx = None):
+    def forward(self, lon, lat, return_gradients=False,r = None, create_graph = False):
         """
         lon, lat: torch tensors in degrees
         return_gradients: if True, return U and grads (autograd)
@@ -128,12 +123,11 @@ class SH_SIREN(nn.Module):
         if not return_gradients:
             return U_scaled
 
-        # compute autograd gradients (acceleration)
         grads = torch.autograd.grad(
             outputs=U_scaled,
             inputs=[lon, lat, r] if r is not None else [lon, lat],
             grad_outputs=torch.ones_like(U_scaled),
-            create_graph=True,
+            create_graph=create_graph,
             retain_graph=True,
             only_inputs=True,
             allow_unused=True
@@ -163,27 +157,24 @@ class SH_LINEAR(nn.Module):
         in_features = (lmax + 1) ** 2
         self.linear = LINEAR(in_features=in_features, out_features=out_features, bias=False)
 
-    def forward(self, lon, lat, return_gradients=False, r=None, idx=None):
+    def forward(self, lon, lat, return_gradients=False, r=None, create_graph = False):
         """
         lon, lat: torch tensors in degrees
         return_gradients: if True, return U and grads (autograd)
         """
-        # build differentiable embedding
         Y = self.embedding(lon, lat)
         Y = Y.to(self.device)
 
-        # forward pass
         U_scaled = self.linear(Y)
 
         if not return_gradients:
             return U_scaled
 
-        # compute autograd gradients (acceleration)
         grads = torch.autograd.grad(
             outputs=U_scaled,
             inputs=[lon, lat, r] if r is not None else [lon, lat],
             grad_outputs=torch.ones_like(U_scaled),
-            create_graph=True,
+            create_graph=create_graph,
             retain_graph=True,
             only_inputs=True,
             allow_unused=True

@@ -16,16 +16,10 @@ def main():
     models_dir = os.path.join(base_dir, 'Outputs', 'Models')
     data_dir = os.path.join(base_dir, 'Data')
 
-    # ───────────────────────────────
-    # Load test data
-    # ───────────────────────────────
     test_path = os.path.join(data_dir, "Samples_2190-2_250k_r0_test.parquet")
     test_df = pd.read_parquet(test_path)
     print(f"📈 Loaded {len(test_df):,} test samples")
 
-    # ───────────────────────────────
-    # Load latest model + config
-    # ───────────────────────────────
     model_files = [f for f in os.listdir(models_dir) if f.endswith('.pth')]
     config_files = [f for f in os.listdir(models_dir) if f.endswith('_model_config.json')]
     if not model_files or not config_files:
@@ -53,7 +47,7 @@ def main():
 
     cache_path = os.path.join(base_dir, "Data", "cache_test")
 
-    if config["model_type"].lower() == "siren":
+    if config["model_type"].lower() == "sh_siren":
         model = SH_SIREN(
             lmax=config["lmax"],
             hidden_features=config["hidden_features"],
@@ -67,7 +61,7 @@ def main():
         )
         print("🌀 Loaded SH-SIREN model for testing")
 
-    elif config["model_type"].lower() == "linear":
+    elif config["model_type"].lower() == "sh_linear":
         model = SH_LINEAR(
             lmax=config["lmax"],
             out_features=config["out_features"],
@@ -104,7 +98,16 @@ def main():
 
     # Unpack gradients
     g_lon, g_lat, g_r = grads_phys
-    g_mag = torch.sqrt(g_lon**2 + g_lat**2)
+
+    # Convert to mGal
+    g_lon = g_lon * 1e5
+    g_lat = g_lat * 1e5
+    if g_r is not None:
+        g_r = g_r * 1e5
+        g_mag = torch.sqrt(g_lon ** 2 + g_lat ** 2 + g_r ** 2)
+
+    # Magnitude
+    g_mag = torch.sqrt(g_lon ** 2 + g_lat ** 2)
 
     # Convert to NumPy
     U_pred = U_pred.detach().cpu().numpy().ravel()
@@ -112,9 +115,7 @@ def main():
     pred_g_lat = g_lat.detach().cpu().numpy()
     pred_g_mag = g_mag.detach().cpu().numpy()
 
-    # ───────────────────────────────
-    # Compute statistics and errors
-    # ───────────────────────────────
+
     mse_theta = np.mean((pred_g_lat - true_theta) ** 2)
     mse_phi = np.mean((pred_g_lon - true_phi) ** 2)
     mse_mag = np.mean((pred_g_mag - true_mag) ** 2)

@@ -9,9 +9,7 @@ import torch
 
 
 def _amp_worker(th_deg, lmax, normalization):
-    # A_{l,m}(theta) = N_{l,m} P_l^m(cos theta), evaluated at phi=0 so cos-branch holds amplitudes
     ylm = pysh.expand.spharm(lmax, th_deg, 0.0, normalization=normalization, kind="real")
-    # Pack [A_{0,0}, A_{1,0}, A_{1,1}, ..., A_{L,0},...,A_{L,L}]
     A_list = []
     for l in range(lmax + 1):
         A_l = [ylm[0, l, m] for m in range(l + 1)]  # cos-branch m=0..l
@@ -47,7 +45,7 @@ class SHEmbedding:
             self.theta_grid = torch.from_numpy(np.load(grid_file)).float()
             return
 
-        print(f"⚙️ Building θ-LUT for lmax={self.lmax} with n_theta={self.n_theta} ...")
+        print(f"Building θ-LUT for lmax={self.lmax} with n_theta={self.n_theta} ...")
         theta_grid = torch.linspace(0.0, torch.pi, self.n_theta)  # [0, π]
         theta_deg = (theta_grid * 180.0 / np.pi).cpu().numpy()
 
@@ -60,7 +58,7 @@ class SHEmbedding:
         A_lut = np.vstack(results).astype(np.float32)
         np.save(lut_file, A_lut)
         np.save(grid_file, theta_grid.cpu().numpy())
-        print(f"💾 Saved LUT: {lut_file} and grid: {grid_file}")
+        print(f"Saved LUT: {lut_file} and grid: {grid_file}")
 
         self.A_lut = torch.from_numpy(A_lut).float()
         self.theta_grid = theta_grid.float()
@@ -81,28 +79,23 @@ class SHEmbedding:
         A_lut = self._A_lut_dev
         grid = self._theta_grid_dev
 
-        # Clamp theta to grid
         th = torch.clamp(theta_rad, 0.0, torch.pi - 1e-12)
 
-        # searchsorted upper index
-        # Note: torch.searchsorted requires grid 1D ascending
         idx_hi = torch.searchsorted(grid, th, right=False)
         idx_hi = torch.clamp(idx_hi, 1, grid.numel() - 1)
         idx_lo = idx_hi - 1
 
-        th0 = grid[idx_lo]     # (N,)
-        th1 = grid[idx_hi]     # (N,)
+        th0 = grid[idx_lo]
+        th1 = grid[idx_hi]
         denom = (th1 - th0)
-        # safe to avoid /0 if two grid points equal (should not happen with linspace)
+
         denom = torch.where(denom > 0, denom, torch.ones_like(denom))
 
-        t = (th - th0) / denom  # (N,)
+        t = (th - th0) / denom
 
-        # Gather rows
-        A0 = A_lut[idx_lo, :]   # (N, S_amp)
-        A1 = A_lut[idx_hi, :]   # (N, S_amp)
+        A0 = A_lut[idx_lo, :]
+        A1 = A_lut[idx_hi, :]
 
-        # Linear interpolation (differentiable wrt th via t)
         A = A0 + t.unsqueeze(1) * (A1 - A0)
         return A
 
@@ -113,12 +106,12 @@ class SHEmbedding:
         lat = lat.to(torch.float32)
         device = lon.device
 
-        phi = torch.deg2rad(lon)                   # (N,)
-        theta = torch.deg2rad(90.0 - lat)          # (N,)
+        phi = torch.deg2rad(lon)
+        theta = torch.deg2rad(90.0 - lat)
 
         if self.use_theta_lut:
             self._prepare_lut(device)
-            A_pack = self._interp_A_theta(theta)   # (N, S_amp) differentiable
+            A_pack = self._interp_A_theta(theta)
 
         Y = self._assemble_torch(phi, A_pack, self.lmax)
         return Y
@@ -133,7 +126,7 @@ class SHEmbedding:
         col = 0
         amp_col = 0
         for l in range(lmax + 1):
-            A_l = A_pack[:, amp_col:amp_col + (l + 1)]  # (N, l+1)
+            A_l = A_pack[:, amp_col:amp_col + (l + 1)]
             amp_col += (l + 1)
             for m in range(l, 0, -1):
                 Y[:, col] = A_l[:, m] * sin_mphi[:, int(m)]
