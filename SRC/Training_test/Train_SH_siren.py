@@ -43,7 +43,7 @@ def main():
         lon = torch.tensor(df["lon"].values, dtype=torch.float32)
         lat = torch.tensor(df["lat"].values, dtype=torch.float32)
         idx = torch.tensor(df["orig_index"].values, dtype=torch.long)
-        y = torch.tensor(df["dV_m2_s2"].values, dtype=torch.float32).unsqueeze(1)  # or your scaled target
+        y = torch.tensor(df["V_scaled"].values, dtype=torch.float32).unsqueeze(1)
         return lon, lat, idx, y
 
     lon_train, lat_train, idx_train, y_train = df_to_tensors(train_df)
@@ -100,13 +100,14 @@ def main():
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
+    model = model.to(device)
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, factor=0.5, patience=2, min_lr=1e-6
     )
 
-    epochs = 100
+    epochs = 1
     train_losses, val_losses = [], []
 
     best_val_loss = float("inf")

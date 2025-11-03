@@ -40,7 +40,7 @@ def main():
     with open(latest_config_path, "r") as f:
         config = json.load(f)
 
-    print(f"🧩 Loaded config: Lmax={config['lmax']}, hidden_layers={config['hidden_layers']}")
+    print(f"🧩 Loaded config: Lmax={config['lmax']}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     checkpoint = torch.load(latest_model_path, map_location=device)
@@ -98,6 +98,7 @@ def main():
 
     start = time.time()
     U_scaled, grads_phys = model(lon, lat, return_gradients=True)
+    U_pred = scaler.unscale_potential(U_scaled)
     torch.cuda.synchronize() if device.type == 'cuda' else None
     print(f"⏱️ Forward + gradients done in {time.time() - start:.1f}s")
 
@@ -106,7 +107,7 @@ def main():
     g_mag = torch.sqrt(g_lon**2 + g_lat**2)
 
     # Convert to NumPy
-    U_pred = U_scaled.detach().cpu().numpy().ravel()
+    U_pred = U_pred.detach().cpu().numpy().ravel()
     pred_g_lon = g_lon.detach().cpu().numpy()
     pred_g_lat = g_lat.detach().cpu().numpy()
     pred_g_mag = g_mag.detach().cpu().numpy()
@@ -134,9 +135,6 @@ def main():
         },
     }
 
-    # ───────────────────────────────
-    # Save outputs
-    # ───────────────────────────────
     outputs_dir = os.path.join(base_dir, "Outputs", "Predictions")
     os.makedirs(outputs_dir, exist_ok=True)
     model_name = os.path.splitext(os.path.basename(latest_model_path))[0]

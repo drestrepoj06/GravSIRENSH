@@ -23,7 +23,6 @@ class SHSirenScaler:
         self.U_max = U_max
         self.a_scale = None
 
-    # --- fit & scaling of potential ------------------------------------------
     def fit_potential(self, U_np):
         self.U_min = float(np.min(U_np))
         self.U_max = float(np.max(U_np))
@@ -36,11 +35,11 @@ class SHSirenScaler:
     def unscale_potential(self, U_scaled):
         return (U_scaled + 1) * 0.5 * (self.U_max - self.U_min) + self.U_min
 
-    # --- unscaling of gradients ----------------------------------------------
-    def unscale_acceleration(self, grads):
+    def unscale_acceleration(self, grads, lat=None, r=None):
         """
         grads: tuple of torch tensors (dU_dlon, dU_dlat, [dU_dr]) in model space.
-        Returns gradients in physical units (same shape).
+        lat: latitude in degrees (needed for cos(lat))
+        r: radius in meters (optional if constant)
         """
         if self.U_min is None or self.U_max is None:
             raise ValueError("Scaler not fitted. Call fit_potential(U) first.")
@@ -50,15 +49,26 @@ class SHSirenScaler:
 
         dU_dlon, dU_dlat, *rest = grads
 
-        # longitude and latitude derivatives → multiply by angular to linear conversion
-        dU_dlon_phys = dU_dlon * (S * deg2rad)
-        dU_dlat_phys = dU_dlat * (S * deg2rad)
+        # physical radius (if not given, use scaler reference)
+        # physical radius
+        if r is None:
+            r_phys = torch.tensor(self.r_scale or 6.371e6,
+                                  dtype=dU_dlon.dtype,
+                                  device=dU_dlon.device)
+        else:
+            r_phys = r
+
+        # convert degrees to radians
+        lat_rad = lat * deg2rad
+
+        # Convert to physical derivatives (m²/s² per meter)
+        dU_dlon_phys = S * (deg2rad / (r_phys * torch.cos(lat_rad))) * dU_dlon
+        dU_dlat_phys = S * (deg2rad / r_phys) * dU_dlat
 
         if rest:
             dU_dr = rest[0]
-            # If you’re working on a spherical shell (fixed r), keep zero radial derivative
             if dU_dr is not None:
-                dU_dr_phys = dU_dr * (S / (self.r_scale or 1.0))
+                dU_dr_phys = S / (self.r_scale or 1.0) * dU_dr
             else:
                 dU_dr_phys = torch.zeros_like(dU_dlon)
         else:
@@ -128,9 +138,7 @@ class SH_SIREN(nn.Module):
             only_inputs=True,
             allow_unused=True
         )
-
-        # rescale to physical units
-        grads_phys = self.scaler.unscale_acceleration(grads)
+        grads_phys = self.scaler.unscale_acceleration(grads, lat=lat, r=r)
         return U_scaled, grads_phys
 
 class SH_LINEAR(nn.Module):
@@ -180,9 +188,7 @@ class SH_LINEAR(nn.Module):
             only_inputs=True,
             allow_unused=True
         )
-
-        # rescale to physical units
-        grads_phys = self.scaler.unscale_acceleration(grads)
+        grads_phys = self.scaler.unscale_acceleration(grads, lat=lat, r=r)
         return U_scaled, grads_phys
 
 
