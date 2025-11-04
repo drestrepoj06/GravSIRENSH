@@ -75,7 +75,7 @@ class GravityDataPlotter:
             return f"EGM2008 {symbol} (Lmax={self.lmax})"
 
     def _find_predictions_file(self):
-        pattern = os.path.join(self.predictions_dir, f"*_U*.npy")
+        pattern = os.path.join(self.predictions_dir, f"*_mag*.npy")
         matches = glob.glob(pattern)
         if matches:
             latest = max(matches, key=os.path.getmtime)
@@ -311,7 +311,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     # Choose target type here: 'acceleration' or 'potential'
-    target_type = "potential"
+    target_type = "acceleration"
 
     train_plotter, test_plotter = GravityDataPlotter.from_latest(data_dir, output_dir, target_type=target_type)
 

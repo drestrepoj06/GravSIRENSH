@@ -18,7 +18,7 @@ def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
     data_path = os.path.join(base_dir, 'Data', 'Samples_2190-2_5.0M_r0_train.parquet')
 
-    print("📂 Loading dataset...")
+    print("Loading dataset...")
     df = pd.read_parquet(data_path)
     df["orig_index"] = np.arange(len(df))
 
