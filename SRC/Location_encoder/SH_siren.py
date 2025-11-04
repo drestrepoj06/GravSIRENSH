@@ -6,180 +6,258 @@ jhonr
 import torch
 import torch.nn as nn
 from SRC.Location_encoder.SH_embedding import SHEmbedding
-from SRC.Location_encoder.Siren import SIRENNet, LINEAR
+from SRC.Location_encoder.Siren import SIRENNet
 import numpy as np
+import lightning.pytorch as pl
 
 # Scaling target outputs in the range [-1, 1],
 # based on the scaling preferred for SIRENNETS: https://github.com/vsitzmann/siren
 # https://github.com/vsitzmann/siren/blob/4df34baee3f0f9c8f351630992c1fe1f69114b5f/explore_siren.ipynb
 class SHSirenScaler:
     """
-    Handles scaling of potential U and rescaling of its gradients
-    (autograd-compatible for computing physical accelerations).
+    Handles scaling of potential U and/or gravity g,
+    depending on experiment mode.
     """
-    def __init__(self, r_scale=None, U_min=None, U_max=None):
+    def __init__(self, mode="U", r_scale=6.371e6):
+        self.mode = mode
         self.r_scale = r_scale
-        self.U_min = U_min
-        self.U_max = U_max
-        self.a_scale = None
+        self.U_min = self.U_max = None
+        self.g_min = self.g_max = None
+        self.u_scale = None
 
-    def fit_potential(self, U_np):
-        self.U_min = float(np.min(U_np))
-        self.U_max = float(np.max(U_np))
-        self.u_scale = 0.5 * (self.U_max - self.U_min)
+    # === FITTING ===
+    def fit(self, df):
+        """Fit scaler based on mode."""
+        if self.mode in ["U", "g_indirect", "U_g_indirect"]:
+            self.U_min = float(df["dU_m2_s2"].min())
+            self.U_max = float(df["dU_m2_s2"].max())
+            self.u_scale = 0.5 * (self.U_max - self.U_min)
+
+        if self.mode in ["g_direct", "U_g_direct"]:
+            g_cols = [c for c in df.columns if c.startswith("dg_")]
+            g_values = df[g_cols].values
+            self.g_min = float(g_values.min())
+            self.g_max = float(g_values.max())
+
         return self
 
+    # === POTENTIAL ===
     def scale_potential(self, U):
+        if self.U_min is None or self.U_max is None:
+            raise ValueError("Scaler not fitted for potential.")
         return 2 * (U - self.U_min) / (self.U_max - self.U_min) - 1
 
     def unscale_potential(self, U_scaled):
+        if self.U_min is None or self.U_max is None:
+            raise ValueError("Scaler not fitted for potential.")
         return (U_scaled + 1) * 0.5 * (self.U_max - self.U_min) + self.U_min
 
-    def unscale_acceleration(self, grads, lat=None, r=None):
+    # === ACCELERATION ===
+    def scale_gravity(self, g):
+        """Scale g directly using its min/max."""
+        if self.g_min is None or self.g_max is None:
+            raise ValueError("Scaler not fitted for gravity.")
+        return 2 * (g - self.g_min) / (self.g_max - self.g_min) - 1
+
+    def unscale_gravity(self, g_scaled):
+        """Inverse of scale_gravity."""
+        return (g_scaled + 1) * 0.5 * (self.g_max - self.g_min) + self.g_min
+
+    def unscale_acceleration_from_potential(self, grads, lat, r=None):
         """
-        grads: tuple of torch tensors (dU_dlon, dU_dlat, [dU_dr]) in model space.
-        lat: latitude in degrees (needed for cos(lat))
-        r: radius in meters (optional if constant)
+        grads: (dU_dlon, dU_dlat, [dU_dr]) from model space.
+        Converts to physical accelerations using potential scaling.
         """
         if self.U_min is None or self.U_max is None:
-            raise ValueError("Scaler not fitted. Call fit_potential(U) first.")
+            raise ValueError("Scaler not fitted for potential (required for indirect g).")
 
         S = 0.5 * (self.U_max - self.U_min)
         deg2rad = np.pi / 180.0
-
         dU_dlon, dU_dlat, *rest = grads
 
-        # physical radius (if not given, use scaler reference)
-        # physical radius
         if r is None:
-            r_phys = torch.tensor(self.r_scale or 6.371e6,
-                                  dtype=dU_dlon.dtype,
-                                  device=dU_dlon.device)
+            r_phys = torch.tensor(self.r_scale, dtype=dU_dlon.dtype, device=dU_dlon.device)
         else:
             r_phys = r
 
         lat_rad = lat * deg2rad
-
         dU_dlon_phys = S * (deg2rad / (r_phys * torch.cos(lat_rad))) * dU_dlon
         dU_dlat_phys = S * (deg2rad / r_phys) * dU_dlat
 
         if rest:
             dU_dr = rest[0]
-            if dU_dr is not None:
-                dU_dr_phys = S / (self.r_scale or 1.0) * dU_dr
-            else:
-                dU_dr_phys = torch.zeros_like(dU_dlon)
+            dU_dr_phys = S / self.r_scale * dU_dr if dU_dr is not None else torch.zeros_like(dU_dlon)
         else:
             dU_dr_phys = None
 
         return dU_dlon_phys, dU_dlat_phys, dU_dr_phys
 
 # Based on the code https://github.com/MarcCoru/locationencoder/blob/main/locationencoder/locationencoder.py
-# But only for the encoder SH + Siren network and the autograd of
+# But only for the encoder SH + Siren network and the autograd of Martin & Schaub (2022)
 
 class SH_SIREN(nn.Module):
-    def __init__(self, lmax=10, hidden_features=128, hidden_layers=4, out_features=1,
-                 first_omega_0=30.0, hidden_omega_0=1.0, device='cuda',
-                 normalization="4pi", cache_path=None, scaler=None):
+    def __init__(
+        self,
+        lmax=10,
+        hidden_features=128,
+        hidden_layers=4,
+        out_features=1,
+        first_omega_0=30.0,
+        hidden_omega_0=1.0,
+        device='cuda',
+        normalization="4pi",
+        exclude_degrees=None,
+        cache_path=None,
+        scaler=None,
+        mode="U"
+    ):
+        """
+        mode:
+          - "U"              : predict potential only
+          - "g_direct"       : predict gravity components directly
+          - "g_indirect"     : predict potential and derive g = -∇U
+          - "U_g_direct"     : predict potential and g directly (multi-output)
+          - "U_g_indirect"   : predict potential and derive g = -∇U
+        """
         super().__init__()
         self.device = device
         self.scaler = scaler
+        self.mode = mode
         self.lmax = lmax
         self.normalization = normalization
         self.out_features = int(out_features)
         self.cache_path = cache_path
 
-        # Create embedding
+        # --- Embedding setup ---
         self.embedding = SHEmbedding(
             lmax=lmax,
             normalization=normalization,
             cache_path=cache_path,
             use_theta_lut=True,
             n_theta=18001,
+            exclude_degrees=exclude_degrees
         )
 
-        n_basis = (lmax + 1) ** 2
+        self.embedding.build_theta_lut()
+        dummy_phi = torch.tensor([0.0])
+        dummy_lat = torch.tensor([0.0])
+        Y_dummy = self.embedding(dummy_phi, dummy_lat)
+        in_features = Y_dummy.shape[1]
+
+        # --- Determine network output size ---
+        if mode in ["U", "g_indirect"]:
+            out_features = 1
+        elif mode in ["g_direct"]:
+            out_features = 2  # (g_theta, g_phi)
+        elif mode in ["U_g_direct", "U_g_indirect"]:
+            out_features = 3  # (U, g_theta, g_phi)
+        else:
+            raise ValueError(f"Unknown mode '{mode}'")
+
+        # --- Build SIREN ---
         self.siren = SIRENNet(
-            in_features=n_basis,
+            in_features=in_features,
             hidden_features=hidden_features,
             hidden_layers=hidden_layers,
-            out_features=self.out_features,
+            out_features=out_features,
             first_omega_0=first_omega_0,
-            hidden_omega_0=hidden_omega_0
-        ).to(device)
-
-    def forward(self, lon, lat, return_gradients=False,r = None, create_graph = False):
-        """
-        lon, lat: torch tensors in degrees
-        return_gradients: if True, return U and grads (autograd)
-        """
-        # build differentiable embedding
-        Y = self.embedding(lon, lat)
-        Y = Y.to(self.device)
-
-        # forward pass
-        U_scaled = self.siren(Y)
-
-        if not return_gradients:
-            return U_scaled
-
-        grads = torch.autograd.grad(
-            outputs=U_scaled,
-            inputs=[lon, lat, r] if r is not None else [lon, lat],
-            grad_outputs=torch.ones_like(U_scaled),
-            create_graph=create_graph,
-            retain_graph=True,
-            only_inputs=True,
-            allow_unused=True
+            hidden_omega_0=hidden_omega_0,
         )
-        grads_phys = self.scaler.unscale_acceleration(grads, lat=lat, r=r)
-        return U_scaled, grads_phys
 
-class SH_LINEAR(nn.Module):
-    """
-    Full SH_LINEAR model = SphericalHarmonics embedding + Linear network
-    Mimics the classical spherical harmonic expansion structure.
-    """
-    def __init__(self, lmax = 10, out_features=1, device = 'cuda', normalization="4pi", cache_path=None, scaler=None):
+    def forward(self, lon, lat, return_gradients=False, r=None, create_graph=False):
+        """
+        Forward pass supporting all 5 experimental configurations.
+        """
+        Y = self.embedding(lon, lat).to(self.device)
+        outputs = self.siren(Y)
+
+        # --- MODE 1: Potential only ---
+        if self.mode == "U":
+            if return_gradients:
+                grads = torch.autograd.grad(
+                    outputs=outputs,
+                    inputs=[lon, lat],
+                    grad_outputs=torch.ones_like(outputs),
+                    create_graph=create_graph,
+                    retain_graph=True,
+                    only_inputs=True,
+                    allow_unused=True
+                )
+                grads_phys = self.scaler.unscale_acceleration_from_potential(grads, lat=lat, r=r)
+                return outputs, grads_phys
+            else:
+                return outputs
+
+        # --- MODE 2: Gravity direct ---
+        elif self.mode == "g_direct":
+            return outputs  # (g_theta, g_phi)
+
+        # --- MODE 3: Gravity indirect (from potential) ---
+        elif self.mode == "g_indirect":
+            grads = torch.autograd.grad(
+                outputs=outputs,
+                inputs=[lon, lat],
+                grad_outputs=torch.ones_like(outputs),
+                create_graph=create_graph,
+                retain_graph=True,
+                only_inputs=True,
+                allow_unused=True
+            )
+            grads_phys = self.scaler.unscale_acceleration_from_potential(grads, lat=lat, r=r)
+            # g = -∇U
+            g_theta = -grads_phys[1]
+            g_phi = -grads_phys[0]
+            return outputs, (g_theta, g_phi)
+
+        # --- MODE 4: U + g (direct) ---
+        elif self.mode == "U_g_direct":
+            U_pred = outputs[:, 0:1]
+            g_pred = outputs[:, 1:]
+            return U_pred, g_pred
+
+        # --- MODE 5: U + g (indirect) ---
+        elif self.mode == "U_g_indirect":
+            U_pred = outputs[:, 0:1]
+            grads = torch.autograd.grad(
+                outputs=U_pred,
+                inputs=[lon, lat],
+                grad_outputs=torch.ones_like(U_pred),
+                create_graph=create_graph,
+                retain_graph=True,
+                only_inputs=True,
+                allow_unused=True
+            )
+            grads_phys = self.scaler.unscale_acceleration_from_potential(grads, lat=lat, r=r)
+            g_theta = -grads_phys[1]
+            g_phi = -grads_phys[0]
+            return U_pred, (g_theta, g_phi)
+
+        else:
+            raise ValueError(f"Unsupported mode '{self.mode}'")
+
+class Gravity(pl.LightningModule):
+    def __init__(self, model_cfg, scaler):
         super().__init__()
-        self.device = device
+        self.model = SH_SIREN(**model_cfg)
         self.scaler = scaler
-        self.lmax = lmax
-        self.normalization = normalization
-        self.cache_path = cache_path
-        self.embedding = self.embedding = SHEmbedding(
-            lmax=lmax,
-            normalization=normalization,
-            cache_path=cache_path,
-            use_theta_lut=True,
-            n_theta=18001,
-        )
-        in_features = (lmax + 1) ** 2
-        self.linear = LINEAR(in_features=in_features, out_features=out_features, bias=False)
+        self.criterion = nn.MSELoss()
 
-    def forward(self, lon, lat, return_gradients=False, r=None, create_graph = False):
-        """
-        lon, lat: torch tensors in degrees
-        return_gradients: if True, return U and grads (autograd)
-        """
-        Y = self.embedding(lon, lat)
-        Y = Y.to(self.device)
+    def forward(self, lon, lat):
+        return self.model(lon, lat)
 
-        U_scaled = self.linear(Y)
+    def training_step(self, batch):
+        lon_b, lat_b, y_true_b = [b.to(self.device) for b in batch]
+        y_pred = self.model(lon_b, lat_b)
+        loss = self.criterion(y_pred, y_true_b)
+        self.log("train_loss", loss, prog_bar=True)
+        return loss
 
-        if not return_gradients:
-            return U_scaled
+    def validation_step(self, batch):
+        lon_b, lat_b, y_true_b = [b.to(self.device) for b in batch]
+        y_pred = self.model(lon_b, lat_b)
+        val_loss = self.criterion(y_pred, y_true_b)
+        self.log("val_loss", val_loss, prog_bar=True)
+        return val_loss
 
-        grads = torch.autograd.grad(
-            outputs=U_scaled,
-            inputs=[lon, lat, r] if r is not None else [lon, lat],
-            grad_outputs=torch.ones_like(U_scaled),
-            create_graph=create_graph,
-            retain_graph=True,
-            only_inputs=True,
-            allow_unused=True
-        )
-        grads_phys = self.scaler.unscale_acceleration(grads, lat=lat, r=r)
-        return U_scaled, grads_phys
-
-
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.model.parameters(), lr=1e-4)

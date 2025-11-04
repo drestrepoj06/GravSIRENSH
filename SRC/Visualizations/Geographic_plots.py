@@ -35,7 +35,7 @@ class GravityDataPlotter:
         if self.target_type not in ["acceleration", "potential"]:
             if "dg_total_mGal" in self.sample_df.columns:
                 self.target_type = "acceleration"
-            elif "dV_m2_s2" in self.sample_df.columns:
+            elif "dU_m2_s2" in self.sample_df.columns:
                 self.target_type = "potential"
             else:
                 raise ValueError("Cannot determine target type from dataset.")
@@ -75,7 +75,7 @@ class GravityDataPlotter:
             return f"EGM2008 {symbol} (Lmax={self.lmax})"
 
     def _find_predictions_file(self):
-        pattern = os.path.join(self.predictions_dir, f"*_mag*.npy")
+        pattern = os.path.join(self.predictions_dir, f"*_U*.npy")
         matches = glob.glob(pattern)
         if matches:
             latest = max(matches, key=os.path.getmtime)
@@ -96,8 +96,8 @@ class GravityDataPlotter:
             pred_col = "predicted_dg_total_mGal"
             unit = "mGal"
         else:
-            true_col = "dV_m2_s2"
-            pred_col = "predicted_dV_m2_s2"
+            true_col = "dU_m2_s2"
+            pred_col = "predicted_dU_m2_s2"
             unit = "m²/s²"
 
         self.sample_df[pred_col] = preds
@@ -124,7 +124,7 @@ class GravityDataPlotter:
             value_col = "dg_total_mGal"
             unit = "mGal"
         else:
-            value_col = "dV_m2_s2"
+            value_col = "dU_m2_s2"
             unit = "m²/s²"
 
         Lon, Lat, grid_total = self._make_grid(value_col)
@@ -190,8 +190,8 @@ class GravityDataPlotter:
             unit = "mGal"
             symbol = "Δg"
         else:
-            true_col = "dV_m2_s2"
-            pred_col = "predicted_dV_m2_s2"
+            true_col = "dU_m2_s2"
+            pred_col = "predicted_dU_m2_s2"
             unit = "m²/s²"
             symbol = "ΔV"
 
@@ -311,7 +311,7 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     # Choose target type here: 'acceleration' or 'potential'
-    target_type = "acceleration"
+    target_type = "potential"
 
     train_plotter, test_plotter = GravityDataPlotter.from_latest(data_dir, output_dir, target_type=target_type)
 

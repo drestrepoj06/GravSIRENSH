@@ -18,6 +18,7 @@ def main():
 
     test_path = os.path.join(data_dir, "Samples_2190-2_250k_r0_test.parquet")
     test_df = pd.read_parquet(test_path)
+    test_df = test_df.sample(n=10000, random_state=42)
     print(f"📈 Loaded {len(test_df):,} test samples")
 
     model_files = [f for f in os.listdir(models_dir) if f.endswith('.pth')]
@@ -47,8 +48,7 @@ def main():
 
     cache_path = os.path.join(base_dir, "Data", "cache_test")
 
-    if config["model_type"].lower() == "sh_siren":
-        model = SH_SIREN(
+    model = SH_SIREN(
             lmax=config["lmax"],
             hidden_features=config["hidden_features"],
             hidden_layers=config["hidden_layers"],
@@ -57,22 +57,11 @@ def main():
             hidden_omega_0=config["hidden_omega_0"],
             device=device,
             scaler=scaler,
-            cache_path=cache_path
+            cache_path=cache_path,
+            exclude_degrees=None
         )
-        print("🌀 Loaded SH-SIREN model for testing")
+    print("🌀 Loaded SH-SIREN model for testing")
 
-    elif config["model_type"].lower() == "sh_linear":
-        model = SH_LINEAR(
-            lmax=config["lmax"],
-            out_features=config["out_features"],
-            device=device,
-            scaler=scaler,
-            cache_path=cache_path
-        )
-        print("📈 Loaded SH-LINEAR model for testing")
-
-    else:
-        raise ValueError(f"Unknown model type: {config['model_type']}")
 
     model.load_state_dict(checkpoint["state_dict"])
     model.to(device)
@@ -80,6 +69,7 @@ def main():
     print("✅ Model and scaler loaded successfully.")
 
     # True values (for comparison)
+    true_U = test_df["dU_m2_s2"].values
     true_theta = test_df["dg_theta_mGal"].values
     true_phi = test_df["dg_phi_mGal"].values
     true_mag = test_df["dg_total_mGal"].values
@@ -116,11 +106,12 @@ def main():
     pred_g_mag = g_mag.detach().cpu().numpy()
 
 
+    mse_U = np.mean((U_pred - true_U) ** 2)
     mse_theta = np.mean((pred_g_lat - true_theta) ** 2)
     mse_phi = np.mean((pred_g_lon - true_phi) ** 2)
     mse_mag = np.mean((pred_g_mag - true_mag) ** 2)
 
-    print(f"📊 MSEθ={mse_theta:.3e}  MSEφ={mse_phi:.3e}  MSE|g|={mse_mag:.3e}")
+    print(f"📊 MSEU = {mse_U:.3e} MSEθ={mse_theta:.3e}  MSEφ={mse_phi:.3e}  MSE|g|={mse_mag:.3e}")
 
     # Global stats
     stats = {
@@ -152,6 +143,7 @@ def main():
         "model_file": os.path.basename(latest_model_path),
         "config_file": os.path.basename(latest_config_path),
         "samples": len(test_df),
+        "mse_U_m2s22": float(mse_U),
         "mse_theta_mgal2": float(mse_theta),
         "mse_phi_mgal2": float(mse_phi),
         "mse_mag_mgal2": float(mse_mag),

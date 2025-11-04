@@ -19,12 +19,13 @@ def _amp_worker(th_deg, lmax, normalization):
 
 class SHEmbedding:
     def __init__(self, lmax=10, normalization="4pi", cache_path=None,
-                 use_theta_lut=True, n_theta=18001):
+                 use_theta_lut=True, n_theta=18001, exclude_degrees=None):
         self.lmax = lmax
         self.normalization = normalization
         self.cache_path = cache_path
         self.use_theta_lut = use_theta_lut
         self.n_theta = n_theta
+        self.exclude_degrees = exclude_degrees or []  # 👈 new line
 
         self.A_lut = None
         self.theta_grid = None
@@ -119,22 +120,36 @@ class SHEmbedding:
     def _assemble_torch(self, phi, A_pack, lmax):
         N = A_pack.shape[0]
         Y = torch.empty((N, (lmax + 1) ** 2), dtype=torch.float32, device=phi.device)
-        m_grid = torch.arange(lmax + 1, dtype=torch.float32, device=phi.device)  # 0..L
+
+        m_grid = torch.arange(lmax + 1, dtype=torch.float32, device=phi.device)
         sin_mphi = torch.sin(phi[:, None] * m_grid[None, :])
         cos_mphi = torch.cos(phi[:, None] * m_grid[None, :])
 
         col = 0
         amp_col = 0
         for l in range(lmax + 1):
+            # 👇 skip unwanted degrees
+            if l in self.exclude_degrees:
+                amp_col += (l + 1)
+                continue
+
             A_l = A_pack[:, amp_col:amp_col + (l + 1)]
             amp_col += (l + 1)
+
+            # sin terms
             for m in range(l, 0, -1):
                 Y[:, col] = A_l[:, m] * sin_mphi[:, int(m)]
                 col += 1
-            Y[:, col] = A_l[:, 0]; col += 1
+            # m = 0 term
+            Y[:, col] = A_l[:, 0]
+            col += 1
+            # cos terms
             for m in range(1, l + 1):
                 Y[:, col] = A_l[:, m] * cos_mphi[:, int(m)]
                 col += 1
+
+        # Trim Y to the actual number of filled columns
+        Y = Y[:, :col]
         return Y
 
     __call__ = forward

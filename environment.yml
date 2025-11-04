@@ -16,3 +16,5 @@ dependencies:
   - pip:
       - pyshtools>=4.13.1
       - cartopy==0.25.0
+      - lightning>=2.3.0
+      - wandb

@@ -118,7 +118,7 @@ class GravityDataGenerator:
 
         pot_full = res_full_V.pot.data
         pot_low = res_low_V.pot.data
-        dV = pot_full - pot_low
+        dU = pot_full - pot_low
 
         gr_full = res_full.rad.data * 1e5
         gr_low = res_low.rad.data * 1e5
@@ -140,12 +140,12 @@ class GravityDataGenerator:
         df = pd.DataFrame({
             "lat": lat_grid.astype("float32"),
             "lon": lon_grid.astype("float32"),
-            "dV_m2_s2": dV.ravel().astype("float32"),
+            "dU_m2_s2": dU.ravel().astype("float32"),
             "dg_r_mGal": dg_r.ravel().astype("float32"),
             "dg_theta_mGal": dg_theta.ravel().astype("float32"),
             "dg_phi_mGal": dg_phi.ravel().astype("float32"),
             "dg_total_mGal": dg_total.ravel().astype("float32"),
-            "radius_m": np.full(dV.size, r0, dtype="float32")
+            "radius_m": np.full(dU.size, r0, dtype="float32")
         })
 
         df = self._sample_points(df)
