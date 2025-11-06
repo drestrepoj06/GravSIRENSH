@@ -27,15 +27,16 @@ class SHSirenScaler:
 
     # === FITTING ===
     def fit(self, df):
-        """Fit scaler based on mode."""
-        if self.mode in ["U", "g_indirect", "U_g_indirect"]:
+        # Fit potential whenever U is used (directly or for indirect g)
+        if self.mode in ["U", "g_indirect", "U_g_indirect", "U_g_direct"]:
             self.U_min = float(df["dU_m2_s2"].min())
             self.U_max = float(df["dU_m2_s2"].max())
             self.u_scale = 0.5 * (self.U_max - self.U_min)
 
-        if self.mode in ["g_direct", "U_g_direct"]:
-            g_cols = [c for c in df.columns if c.startswith("dg_")]
-            g_values = df[g_cols].values
+        # Fit gravity whenever g is a target (direct) or part of the loss
+        if self.mode in ["g_direct", "g_indirect", "U_g_direct", "U_g_indirect"]:
+            g_cols = ["dg_theta_mGal", "dg_phi_mGal"]
+            g_values = df[g_cols].to_numpy()
             self.g_min = float(g_values.min())
             self.g_max = float(g_values.max())
 
@@ -174,17 +175,25 @@ class SH_SIREN(nn.Module):
         # --- MODE 1: Potential only ---
         if self.mode == "U":
             if return_gradients:
-                grads = torch.autograd.grad(
-                    outputs=outputs,
-                    inputs=[lon, lat],
-                    grad_outputs=torch.ones_like(outputs),
-                    create_graph=create_graph,
-                    retain_graph=True,
-                    only_inputs=True,
-                    allow_unused=True
-                )
-                grads_phys = self.scaler.unscale_acceleration_from_potential(grads, lat=lat, r=r)
-                return outputs, grads_phys
+                with torch.set_grad_enabled(True):
+                    lon = lon.clone().detach().requires_grad_(True)
+                    lat = lat.clone().detach().requires_grad_(True)
+                    Y = self.embedding(lon, lat).to(self.device)
+                    outputs = self.siren(Y)
+
+                    grads = torch.autograd.grad(
+                        outputs=outputs,
+                        inputs=[lon, lat],
+                        grad_outputs=torch.ones_like(outputs),
+                        create_graph=self.training,
+                        retain_graph=self.training,
+                        only_inputs=True,
+                        allow_unused=True
+                    )
+                    grads_phys = self.scaler.unscale_acceleration_from_potential(
+                        grads, lat=lat, r=r
+                    )
+                    return outputs, grads_phys
             else:
                 return outputs
 
@@ -194,19 +203,25 @@ class SH_SIREN(nn.Module):
 
         # --- MODE 3: Gravity indirect (from potential) ---
         elif self.mode == "g_indirect":
-            grads = torch.autograd.grad(
-                outputs=outputs,
-                inputs=[lon, lat],
-                grad_outputs=torch.ones_like(outputs),
-                create_graph=create_graph,
-                retain_graph=True,
-                only_inputs=True,
-                allow_unused=True
-            )
-            grads_phys = self.scaler.unscale_acceleration_from_potential(grads, lat=lat, r=r)
-            # g = -∇U
-            g_theta = -grads_phys[1]
-            g_phi = -grads_phys[0]
+            with torch.set_grad_enabled(True):
+                lon = lon.clone().detach().requires_grad_(True)
+                lat = lat.clone().detach().requires_grad_(True)
+
+                Y = self.embedding(lon, lat).to(self.device)
+                outputs = self.siren(Y)
+
+                grads = torch.autograd.grad(
+                    outputs=outputs,
+                    inputs=[lon, lat],
+                    grad_outputs=torch.ones_like(outputs),
+                    create_graph=self.training,
+                    retain_graph=self.training,
+                    only_inputs=True,
+                    allow_unused=True
+                )
+                grads_phys = self.scaler.unscale_acceleration_from_potential(grads, lat=lat, r=r)
+                g_theta = -grads_phys[1]
+                g_phi = -grads_phys[0]
             return outputs, (g_theta, g_phi)
 
         # --- MODE 4: U + g (direct) ---
@@ -217,47 +232,89 @@ class SH_SIREN(nn.Module):
 
         # --- MODE 5: U + g (indirect) ---
         elif self.mode == "U_g_indirect":
-            U_pred = outputs[:, 0:1]
-            grads = torch.autograd.grad(
-                outputs=U_pred,
-                inputs=[lon, lat],
-                grad_outputs=torch.ones_like(U_pred),
-                create_graph=create_graph,
-                retain_graph=True,
-                only_inputs=True,
-                allow_unused=True
-            )
-            grads_phys = self.scaler.unscale_acceleration_from_potential(grads, lat=lat, r=r)
-            g_theta = -grads_phys[1]
-            g_phi = -grads_phys[0]
+            with torch.set_grad_enabled(True):
+                lon = lon.clone().detach().requires_grad_(True)
+                lat = lat.clone().detach().requires_grad_(True)
+
+                Y = self.embedding(lon, lat).to(self.device)
+                outputs = self.siren(Y)
+
+                U_pred = outputs[:, 0:1]
+                grads = torch.autograd.grad(
+                    outputs=U_pred,
+                    inputs=[lon, lat],
+                    grad_outputs=torch.ones_like(U_pred),
+                    create_graph=self.training,
+                    retain_graph=self.training,
+                    only_inputs=True,
+                    allow_unused=True
+                )
+                grads_phys = self.scaler.unscale_acceleration_from_potential(grads, lat=lat, r=r)
+                g_theta = -grads_phys[1]
+                g_phi = -grads_phys[0]
             return U_pred, (g_theta, g_phi)
 
         else:
             raise ValueError(f"Unsupported mode '{self.mode}'")
 
 class Gravity(pl.LightningModule):
-    def __init__(self, model_cfg, scaler):
+    def __init__(self, model_cfg, scaler, lr=1e-4):
         super().__init__()
         self.model = SH_SIREN(**model_cfg)
         self.scaler = scaler
+        self.mode = model_cfg.get("mode", "U")
         self.criterion = nn.MSELoss()
+        self.lr = lr  # 🔹 store user-defined learning rate
 
     def forward(self, lon, lat):
         return self.model(lon, lat)
 
+    def _compute_loss(self, y_pred, y_true):
+        if self.mode == "U":
+            return self.criterion(y_pred.view(-1), y_true.view(-1))
+
+        elif self.mode == "g_direct":
+            return self.criterion(y_pred.view(-1), y_true.view(-1))
+
+        elif self.mode == "g_indirect":
+            U_pred, (g_theta, g_phi) = y_pred
+            g_pred = torch.stack([g_theta, g_phi], dim=1)
+            return self.criterion(g_pred.view(-1), y_true.view(-1))
+
+        elif self.mode == "U_g_direct":
+            U_pred, g_pred = y_pred
+            U_true = y_true[:, 0:1]
+            g_true = y_true[:, 1:]
+            loss_U = self.criterion(U_pred.view(-1), U_true.view(-1))
+            loss_g = self.criterion(g_pred.reshape(-1), g_true.reshape(-1))
+            return loss_U + loss_g
+
+        elif self.mode == "U_g_indirect":
+            U_pred, (g_theta, g_phi) = y_pred
+            U_true = y_true[:, 0:1]
+            g_true = y_true[:, 1:]
+            g_pred = torch.stack([g_theta, g_phi], dim=1)
+            loss_U = self.criterion(U_pred.view(-1), U_true.view(-1))
+            loss_g = self.criterion(g_pred.reshape(-1), g_true.reshape(-1))
+            return loss_U + loss_g
+
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
+
     def training_step(self, batch):
         lon_b, lat_b, y_true_b = [b.to(self.device) for b in batch]
-        y_pred = self.model(lon_b, lat_b)
-        loss = self.criterion(y_pred, y_true_b)
-        self.log("train_loss", loss, prog_bar=True)
+        y_pred_b = self.model(lon_b, lat_b)
+        loss = self._compute_loss(y_pred_b, y_true_b)
+        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return loss
 
     def validation_step(self, batch):
         lon_b, lat_b, y_true_b = [b.to(self.device) for b in batch]
-        y_pred = self.model(lon_b, lat_b)
-        val_loss = self.criterion(y_pred, y_true_b)
-        self.log("val_loss", val_loss, prog_bar=True)
+        y_pred_b = self.model(lon_b, lat_b)
+        val_loss = self._compute_loss(y_pred_b, y_true_b)
+        self.log("val_loss", val_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
         return val_loss
 
     def configure_optimizers(self):
-        return torch.optim.Adam(self.model.parameters(), lr=1e-4)
+        """Use externally provided learning rate."""
+        return torch.optim.Adam(self.model.parameters(), lr=self.lr)
