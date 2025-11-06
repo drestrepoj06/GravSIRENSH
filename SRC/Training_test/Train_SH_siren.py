@@ -114,7 +114,7 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "U_g_indirect"
+    mode = "g_indirect"
     lr = 1e-4
     batch_size = 10240
     lmax = 10
@@ -158,7 +158,7 @@ def main():
     )
 
     trainer = pl.Trainer(
-        max_epochs=1,
+        max_epochs=10,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
         log_every_n_steps=50,
@@ -166,10 +166,8 @@ def main():
         logger=wandb_logger
     )
 
-    # --- Train ---
     trainer.fit(module, datamodule=datamodule)
 
-    # --- Save model and configuration ---
     model_path = os.path.join(run_dir, "model.pth")
     torch.save({
         "state_dict": module.model.state_dict(),
