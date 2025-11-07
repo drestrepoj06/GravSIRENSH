@@ -118,11 +118,12 @@ def main(run_path=None):
 
     elif mode == "g_indirect":
         U_pred, (g_theta, g_phi) = model(lon, lat)
+        U_pred = scaler.unscale_potential(U_pred).detach()
         g_theta = (g_theta * 1e5).detach()
         g_phi = (g_phi * 1e5).detach()
         g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
 
-        mse_U = None
+        mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
         mse_g = np.mean((to_np(g_theta) - true_theta) ** 2) + np.mean(
             (to_np(g_phi) - true_phi) ** 2
         )
@@ -183,12 +184,41 @@ def main(run_path=None):
     print(f"💾 Predictions saved in {latest_run}")
 
     # === Metadata summary ===
+    def stats(arr):
+        return {
+            "min": float(np.min(arr)),
+            "max": float(np.max(arr)),
+            "mean": float(np.mean(arr)),
+            "std": float(np.std(arr)),
+        }
+
+    pred_stats = {
+        "g_theta": stats(g_theta_np),
+        "g_phi": stats(g_phi_np),
+        "g_mag": stats(g_mag_np),
+    }
+    if U_pred_np is not None:
+        pred_stats["U"] = stats(U_pred_np)
+
+    true_stats = {
+        "g_theta": stats(test_df["dg_theta_mGal"].to_numpy()),
+        "g_phi": stats(test_df["dg_phi_mGal"].to_numpy()),
+        "g_mag": stats(test_df["dg_total_mGal"].to_numpy()),
+    }
+
+    if "dU_m2_s2" in test_df.columns:
+        true_stats["U"] = stats(test_df["dU_m2_s2"].to_numpy())
+    # === Metadata summary ===
     meta = {
         "mode": mode,
         "samples": len(test_df),
         "mse_U": float(mse_U) if mse_U is not None else None,
         "mse_g": float(mse_g),
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "stats": {
+            "pred": pred_stats,
+            "true": true_stats
+        }
     }
 
     meta_file = f"{prefix}_report.json"

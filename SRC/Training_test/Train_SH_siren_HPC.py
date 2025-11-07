@@ -1,7 +1,7 @@
 import os
 import sys
-import torch
 from torch.utils.data import DataLoader
+import torch
 import pandas as pd
 from datetime import datetime
 import json
@@ -13,7 +13,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 from SRC.Location_encoder.SH_siren import SHSirenScaler, Gravity
 import SRC.Training_test.Test_SH_siren as test_script
 from SRC.Visualizations.Geographic_plots import GravityDataPlotter
+import argparse
 
+
+torch.set_float32_matmul_precision('high')
 class GravityDataset(torch.utils.data.Dataset):
     def __init__(self, df, scaler, mode="g_direct", include_radial=False):
         """
@@ -114,17 +117,19 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "g_indirect"
-    lr = 1e-4
-    batch_size = 10240
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--mode", type=str, default="U")
+    args = parser.parse_args()
+    mode = args.mode
+    lr = 5e-3
+    batch_size = 262144
     lmax = 10
     hidden_layers = 2
     hidden_features = 8
     first_omega_0 = 20
     hidden_omega_0 = 1.0
     exclude_degrees = None
-    epochs = 1
-    alpha_U = 0.1
+    epochs = 100
 
     run_name = (
         f"sh_siren_LR={lr}_mode={mode}_BS={batch_size}_"
@@ -146,8 +151,7 @@ def main():
         scaler=scaler,
         cache_path=os.path.join(base_dir, "Data", "cache_train.npy"),
         exclude_degrees=exclude_degrees,
-        mode=mode,
-        alpha_U = alpha_U
+        mode=mode
     )
 
     datamodule = GravityDataModule(train_df, val_df, scaler=scaler, mode=mode, batch_size=batch_size)
@@ -190,7 +194,6 @@ def main():
         "epochs": epochs,
         "batch_size": batch_size,
         "lmax": lmax,
-        "alpha_U (For U_g models)": alpha_U,
         "hidden_layers": hidden_layers,
         "hidden_features": hidden_features,
         "first_omega_0": first_omega_0,
@@ -214,8 +217,8 @@ def main():
     predictions_dir = run_dir
 
     # === Determine plotting modes based on model mode ===
-    modes_with_potential = ["U", "U_g_direct",  "g_indirect", "U_g_indirect"]
-    modes_accel_only = ["g_direct"]
+    modes_with_potential = ["U", "U_g_direct", "U_g_indirect"]
+    modes_accel_only = ["g_direct", "g_indirect"]
 
     # === Create plotters dynamically ===
     if mode in modes_with_potential:
