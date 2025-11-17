@@ -32,7 +32,7 @@ mode=${modes[$SLURM_ARRAY_TASK_ID]}
 
 echo "Starting Train_SH_siren.py for mode=${mode} at $(date)"
 
-export WANDB_API_KEY="5d0df57b839b8b36807c8c81e3fb6a49225a3dd6"
+export WANDB_API_KEY="xxx"
 
 python Train_SH_siren.py --mode "${mode}"
 
