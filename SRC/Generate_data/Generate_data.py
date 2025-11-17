@@ -54,23 +54,23 @@ class GravityDataGenerator:
         deg_full = np.arange(self.lmax_full + 1)
         deg_low = np.arange(self.lmax_base + 1)
 
-        scale_V_full = (self.r0 / r1) ** deg_full
-        scale_V_low = (self.r0 / r1) ** deg_low
+        scale_U_full = (self.r0 / r1) ** deg_full
+        scale_U_low = (self.r0 / r1) ** deg_low
         scale_g_full = (self.r0 / r1) ** (deg_full + 2)
         scale_g_low = (self.r0 / r1) ** (deg_low + 2)
 
-        clm_full_V = self._scale_clm(clm_full, scale_V_full)
-        clm_low_V = self._scale_clm(clm_low, scale_V_low)
+        clm_full_U = self._scale_clm(clm_full, scale_U_full)
+        clm_low_U = self._scale_clm(clm_low, scale_U_low)
         clm_full_g = self._scale_clm(clm_full, scale_g_full)
         clm_low_g = self._scale_clm(clm_low, scale_g_low)
 
         res_full = clm_full_g.expand(lmax=self.lmax_full)
         res_low = clm_low_g.expand(lmax=self.lmax_full)
 
-        res_full_V = clm_full_V.expand(lmax=self.lmax_full)
-        res_low_V = clm_low_V.expand(lmax=self.lmax_full)
+        res_full_U = clm_full_U.expand(lmax=self.lmax_full)
+        res_low_U = clm_low_U.expand(lmax=self.lmax_full)
 
-        return res_full, res_low, res_full_V, res_low_V
+        return res_full, res_low, res_full_U, res_low_U
 
     def _sample_points(self, df):
         if len(df) <= self.n_samples:
@@ -113,11 +113,11 @@ class GravityDataGenerator:
         return lat_deg, lon_deg, np.vstack((x, y, z)).T
 
     def generate(self):
-        res_full, res_low, res_full_V, res_low_V = self._compute_fields()
+        res_full, res_low, res_full_U, res_low_U = self._compute_fields()
         r0 = self.r0
 
-        pot_full = res_full_V.pot.data
-        pot_low = res_low_V.pot.data
+        pot_full = res_full_U.pot.data
+        pot_low = res_low_U.pot.data
         dU = pot_full - pot_low
 
         gr_full = res_full.rad.data * 1e5

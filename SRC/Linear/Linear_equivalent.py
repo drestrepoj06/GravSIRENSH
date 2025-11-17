@@ -1,190 +1,183 @@
-"""Generate n random samples on the sphere that contain lon, lat, r, potential and acceleration from
-EGM2008. For train, n = 5 M. For test, n = 250 K distributed in a Fibonacci grid.
+"""Equivalent pyshtools linear model to the nparams of the trained neural network
 jhonr"""
 
-import os
+import json
 import numpy as np
-import pandas as pd
 import pyshtools as pysh
+import pandas as pd
+import os
 
-class GravityDataGenerator:
-    def __init__(self, lmax_full, lmax_base, n_samples, mode="train", output_dir="Data", altitude=0.0):
-        self.lmax_full = lmax_full
-        self.lmax_base = lmax_base
-        self.n_samples = n_samples
-        self.mode = mode.lower()
-        self.output_dir = output_dir
+class LinearEquivalentGenerator:
+    """
+    Automatically:
+      • Loads config.json from run_dir
+      • Computes L_equiv from NN parameter count
+      • Builds linear residual SH model (full − l=2)
+      • Saves grid as linear_results.parquet
+      • Evaluates gravity at test points (data_path)
+      • Saves g_r, g_theta, g_phi, g_mag as .npy
+      • Stores all results in the object
+
+    Usage:
+        gen = LinearEquivalentGenerator(run_dir, data_path)
+    """
+
+    def __init__(self, run_dir, data_path, altitude=0.0):
+        self.run_dir = run_dir
+        self.data_path = data_path
         self.altitude = altitude
 
-        # Ensure directory exists
-        os.makedirs(self.output_dir, exist_ok=True)
+        # Internal paths
+        self.config_path = os.path.join(run_dir, "config.json")
+        self.linear_output_path = os.path.join(run_dir, "linear_results.parquet")
 
-        # Determine actual number of samples (after generation)
-        n_final = len(self.samples) if hasattr(self, "samples") else n_samples
+        # Load config
+        with open(self.config_path, "r") as f:
+            self.config = json.load(f)
 
-        # Use actual number in filename
-        sample_tag = self._format_samples(n_final)
+        # Initialize placeholders
+        self.clm_U = None
+        self.clm_g = None
+        self.L_equiv = None
 
-        self.output_file = os.path.join(
-            self.output_dir,
-            f"Samples_{lmax_full}-{lmax_base}_{sample_tag}_r{int(self.altitude)}_{self.mode}.parquet"
-        )
+        # Automatically run entire pipeline
+        self.df_grid = self.generate_linear_equiv()
+        (
+            self.g_r_lin,
+            self.g_theta_lin,
+            self.g_phi_lin,
+            self.g_mag_lin,
+            self.mask
+        ) = self.evaluate_on_test(save=True)
+
+
+    # ---------------------------------------------------------
+    # Helper: count NN parameters
+    # ---------------------------------------------------------
+    @staticmethod
+    def compute_siren_params(config):
+        lmax = config["lmax"]
+        hidden = config["hidden_features"]
+        layers = config["hidden_layers"]
+
+        input_dim = (lmax + 1)**2
+
+        mode = config.get("mode", "U")
+        if mode in ["U", "g_indirect"]:
+            output_dim = 1
+        elif mode == "g_direct":
+            output_dim = 2
+        elif mode in ["U_g_direct", "U_g_indirect"]:
+            output_dim = 3
+        else:
+            raise ValueError(f"Unknown mode '{mode}'")
+
+        params = input_dim * hidden + hidden
+        for _ in range(layers - 1):
+            params += hidden * hidden + hidden
+        params += hidden * output_dim + output_dim
+
+        return params
 
     @staticmethod
-    def _format_samples(n):
-        if n >= 1_000_000:
-            return f"{n / 1_000_000:.1f}M".rstrip("0").rstrip(".")
-        elif n >= 1_000:
-            return f"{n / 1_000:.0f}k"
-        else:
-            return str(n)
+    def params_to_lmax(params):
+        return max(0, int(np.round(np.sqrt(params) - 1)))
 
-    def _scale_clm(self, clm, scale):
-        scaled = clm.copy()
-        scaled.coeffs *= scale[np.newaxis, :, np.newaxis]
-        return scaled
 
-    def _compute_fields(self):
-        clm_full = pysh.datasets.Earth.EGM2008(lmax=self.lmax_full)
-        clm_low = pysh.datasets.Earth.EGM2008(lmax=self.lmax_base)
+    # ---------------------------------------------------------
+    # Step 1 — Build linear model + save grid
+    # ---------------------------------------------------------
+    def generate_linear_equiv(self):
+        params = self.compute_siren_params(self.config)
+        L_equiv = self.params_to_lmax(params)
+        self.L_equiv = L_equiv
 
-        self.r0 = clm_full.r0
-        r1 = self.r0 + self.altitude
+        print(f"🔢 NN parameters: {params:,}")
+        print(f"🎯 Equivalent SH degree: {L_equiv}")
 
-        deg_full = np.arange(self.lmax_full + 1)
-        deg_low = np.arange(self.lmax_base + 1)
+        clm_full = pysh.datasets.Earth.EGM2008(lmax=L_equiv)
+        clm_low  = pysh.datasets.Earth.EGM2008(lmax=2).pad(L_equiv)
 
-        scale_V_full = (self.r0 / r1) ** deg_full
-        scale_V_low = (self.r0 / r1) ** deg_low
-        scale_g_full = (self.r0 / r1) ** (deg_full + 2)
-        scale_g_low = (self.r0 / r1) ** (deg_low + 2)
+        clm_res = clm_full - clm_low
 
-        clm_full_V = self._scale_clm(clm_full, scale_V_full)
-        clm_low_V = self._scale_clm(clm_low, scale_V_low)
-        clm_full_g = self._scale_clm(clm_full, scale_g_full)
-        clm_low_g = self._scale_clm(clm_low, scale_g_low)
+        r0 = clm_res.r0
+        r1 = r0 + self.altitude
+        degrees = np.arange(L_equiv + 1)
 
-        res_full = clm_full_g.expand(lmax=self.lmax_full)
-        res_low = clm_low_g.expand(lmax=self.lmax_full)
+        scale_U = (r0 / r1) ** degrees
+        scale_g = (r0 / r1) ** (degrees + 2)
 
-        res_full_V = clm_full_V.expand(lmax=self.lmax_full)
-        res_low_V = clm_low_V.expand(lmax=self.lmax_full)
+        clm_U = clm_res.copy()
+        clm_g = clm_res.copy()
 
-        return res_full, res_low, res_full_V, res_low_V
+        clm_U.coeffs *= scale_U[np.newaxis, :, np.newaxis]
+        clm_g.coeffs *= scale_g[np.newaxis, :, np.newaxis]
 
-    def _sample_points(self, df):
-        if len(df) <= self.n_samples:
-            return df
+        self.clm_U = clm_U
+        self.clm_g = clm_g
 
-        if self.mode == "train":
-            weights = np.abs(np.cos(np.radians(df["lat"].values)))
-            return df.sample(n=self.n_samples, weights=weights, random_state=42).reset_index(drop=True)
+        # Make grid for inspection
+        grid_U = clm_U.expand(lmax=L_equiv)
+        grid_g = clm_g.expand(lmax=L_equiv)
 
-        elif self.mode == "test":
-            lat_fib, lon_fib, _ = self.fibonacci_spiral_sphere(self.n_samples, self.r0)
-            from scipy.spatial import cKDTree
-            # From the pysh.expand grid, give the closest coordinates to a Fibonacci grid
-            coords_grid = np.vstack((df["lat"].values, df["lon"].values)).T
-            tree = cKDTree(coords_grid)
-            coords_fib = np.vstack((lat_fib, lon_fib)).T
-            _, idx = tree.query(coords_fib, k=1)
-
-            df_test = df.iloc[idx].reset_index(drop=True)
-            return df_test
-
-        else:
-            raise ValueError("mode must be 'train' or 'test'")
-
-    # From https://github.com/MartinAstro/GravNN/blob/master/GravNN/Trajectories/FibonacciDist.py
-    # Line 10
-    def fibonacci_spiral_sphere(self, num_points, r):
-        gr = (np.sqrt(5.0) + 1.0) / 2.0  # golden ratio
-        ga = (2.0 - gr) * (2.0 * np.pi)  # golden angle
-
-        lat = np.arcsin(-1.0 + 2.0 * np.arange(num_points) / num_points)
-        lon = ga * np.arange(num_points)
-
-        x = r * np.cos(lon) * np.cos(lat)
-        y = r * np.sin(lon) * np.cos(lat)
-        z = r * np.sin(lat)
-
-        lat_deg = np.degrees(lat)
-        lon_deg = np.degrees(lon % (2 * np.pi))
-        return lat_deg, lon_deg, np.vstack((x, y, z)).T
-
-    def generate(self):
-        res_full, res_low, res_full_V, res_low_V = self._compute_fields()
-        r0 = self.r0
-
-        pot_full = res_full_V.pot.data
-        pot_low = res_low_V.pot.data
-        dU = pot_full - pot_low
-
-        gr_full = res_full.rad.data * 1e5
-        gr_low = res_low.rad.data * 1e5
-        gtheta_full = res_full.theta.data * 1e5
-        gtheta_low = res_low.theta.data * 1e5
-        gphi_full = res_full.phi.data * 1e5
-        gphi_low = res_low.phi.data * 1e5
-
-        dg_r = gr_full - gr_low
-        dg_theta = gtheta_full - gtheta_low
-        dg_phi = gphi_full - gphi_low
-        dg_total = np.sqrt(dg_theta**2 + dg_phi**2)#+dg_r**2) the radial component will be added when changing altitude
-
-        lats = res_full.pot.lats()
-        lons = res_full.pot.lons()
+        lats = grid_U.pot.lats()
+        lons = grid_U.pot.lons()
         lat_grid = np.repeat(lats, len(lons))
         lon_grid = np.tile(lons, len(lats))
 
+        dU = grid_U.pot.data
+        dg_r = grid_g.rad.data * 1e5
+        dg_theta = grid_g.theta.data * 1e5
+        dg_phi = grid_g.phi.data * 1e5
+        dg_total = np.sqrt(dg_theta**2 + dg_phi**2)
+
         df = pd.DataFrame({
-            "lat": lat_grid.astype("float32"),
-            "lon": lon_grid.astype("float32"),
-            "dU_m2_s2": dU.ravel().astype("float32"),
-            "dg_r_mGal": dg_r.ravel().astype("float32"),
-            "dg_theta_mGal": dg_theta.ravel().astype("float32"),
-            "dg_phi_mGal": dg_phi.ravel().astype("float32"),
-            "dg_total_mGal": dg_total.ravel().astype("float32"),
-            "radius_m": np.full(dU.size, r0, dtype="float32")
+            "lat": lat_grid,
+            "lon": lon_grid,
+            "dU_m2_s2": dU.ravel(),
+            "dg_r_mGal": dg_r.ravel(),
+            "dg_theta_mGal": dg_theta.ravel(),
+            "dg_phi_mGal": dg_phi.ravel(),
+            "dg_total_mGal": dg_total.ravel(),
+            "radius_m": np.full(dU.size, r0),
         })
 
-        df = self._sample_points(df)
-        df.to_parquet(self.output_file, index=False)
-        print(f"✅ Saved: {self.output_file}")
+        df.to_parquet(self.linear_output_path, index=False)
+        print(f"📁 Saved linear SH grid → {self.linear_output_path}")
+
         return df
 
-def main():
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    data_dir = os.path.join(base_dir, 'Data')
-    os.makedirs(data_dir, exist_ok=True)
 
-    lmax_full = 2190
-    lmax_base = 2
-    altitude = 0.0
+    def evaluate_on_test(self, save=True):
+        df_test = pd.read_parquet(self.data_path)
+        lat = df_test["lat"].values
+        lon = df_test["lon"].values
+        mask = np.abs(lat) < 89.9999
+        lat_f = lat[mask]
+        lon_f = lon[mask]
+        r_f = np.full_like(lat_f, self.clm_g.r0, dtype=float)
 
-    generator_train = GravityDataGenerator(
-        lmax_full=lmax_full,
-        lmax_base=lmax_base,
-        n_samples=5000000,
-        mode="train",
-        output_dir=data_dir,
-        altitude=altitude
-    )
-    df_train = generator_train.generate()
+        g = self.clm_g.expand(
+            lat=lat_f.reshape(-1, 1),
+            lon=lon_f.reshape(-1, 1),
+            r=r_f.reshape(-1, 1),
+            lmax=self.L_equiv,
+            degrees=True,
+        )
 
-    generator_test = GravityDataGenerator(
-        lmax_full=lmax_full,
-        lmax_base=lmax_base,
-        n_samples=250000,
-        mode="test",
-        output_dir=data_dir,
-        altitude=altitude
-    )
-    df_test = generator_test.generate()
+        g_r = g[:, 0]*1e5
+        g_theta = g[:, 1]*1e5
+        g_phi = g[:, 2]*1e5
+        g_mag = np.sqrt(g_theta**2 + g_phi**2)
+        if save:
+            np.save(os.path.join(self.run_dir, "linear_g_r.npy"), g_r)
+            np.save(os.path.join(self.run_dir, "linear_g_theta.npy"), g_theta)
+            np.save(os.path.join(self.run_dir, "linear_g_phi.npy"), g_phi)
+            np.save(os.path.join(self.run_dir, "linear_g_mag.npy"), g_mag)
+            print(f"📁 Saved linear gravity components in {self.run_dir}")
 
-    print("\n✅ Both training and testing datasets generated successfully.")
-    print(f"   Train: {len(df_train):,} samples → {generator_train.output_file}")
-    print(f"   Test:  {len(df_test):,} samples → {generator_test.output_file}")
+        return g_r, g_theta, g_phi, g_mag, mask
 
-if __name__ == "__main__":
-    main()
+
+
+

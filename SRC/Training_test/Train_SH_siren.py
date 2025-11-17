@@ -13,6 +13,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 from SRC.Location_encoder.SH_siren import SHSirenScaler, Gravity
 import SRC.Training_test.Test_SH_siren as test_script
 from SRC.Visualizations.Geographic_plots import GravityDataPlotter
+from SRC.Linear.Linear_equivalent import LinearEquivalentGenerator
 
 class GravityDataset(torch.utils.data.Dataset):
     def __init__(self, df, scaler, mode="g_direct", include_radial=False):
@@ -123,7 +124,7 @@ def main():
     first_omega_0 = 20
     hidden_omega_0 = 1.0
     exclude_degrees = None
-    epochs = 10
+    epochs = 1
     alpha_U = 0.05
 
     run_name = (
@@ -210,21 +211,24 @@ def main():
     test_script.main(run_path=run_dir)
 
     data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_r0_test.parquet")
+
+    if trainer.is_global_zero:
+        print("Generating linear equivalent model...")
+        gen = LinearEquivalentGenerator(run_dir, data_path)
     output_dir = run_dir
     predictions_dir = run_dir
 
-    # === Determine plotting modes based on model mode ===
     modes_with_potential = ["U", "U_g_direct",  "g_indirect", "U_g_indirect"]
     modes_accel_only = ["g_direct"]
 
-    # === Create plotters dynamically ===
     if mode in modes_with_potential:
-        # Plot both potential and acceleration maps
         print("🌀 Plotting potential and acceleration maps...")
+
         plotter_potential = GravityDataPlotter(
             data_path=data_path,
             output_dir=output_dir,
             predictions_dir=predictions_dir,
+            linear_dir=predictions_dir,
             target_type="potential"
         )
         plotter_potential.plot_map()
@@ -234,18 +238,20 @@ def main():
             data_path=data_path,
             output_dir=output_dir,
             predictions_dir=predictions_dir,
+            linear_dir=predictions_dir,
             target_type="acceleration"
         )
         plotter_accel.plot_map()
         plotter_accel.plot_scatter()
 
     elif mode in modes_accel_only:
-        # Only acceleration plots
         print("⚡ Plotting acceleration maps...")
+
         plotter_accel = GravityDataPlotter(
             data_path=data_path,
             output_dir=output_dir,
             predictions_dir=predictions_dir,
+            linear_dir=predictions_dir,
             target_type="acceleration"
         )
         plotter_accel.plot_map()

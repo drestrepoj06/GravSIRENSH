@@ -20,6 +20,10 @@ def main(run_path=None):
     # === Load test dataset ===
     test_path = os.path.join(data_dir, "Samples_2190-2_250k_r0_test.parquet")
     test_df = pd.read_parquet(test_path)
+
+    mask = np.abs(test_df["lat"].values) < 89.9999
+    test_df = test_df[mask].reset_index(drop=True)
+
     print(f"📈 Loaded {len(test_df):,} test samples")
 
     # === Find the latest run ===
@@ -48,7 +52,6 @@ def main(run_path=None):
     mode = config["mode"]
     print(f"🧩 Loaded config: mode={mode}, lmax={config['lmax']}")
 
-    # === Restore scaler ===
     scaler_data = checkpoint["scaler"]
     scaler = SHSirenScaler(mode=mode)
     scaler.U_min = scaler_data.get("U_min")

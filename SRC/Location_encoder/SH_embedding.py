@@ -25,7 +25,7 @@ class SHEmbedding:
         self.cache_path = cache_path
         self.use_theta_lut = use_theta_lut
         self.n_theta = n_theta
-        self.exclude_degrees = exclude_degrees or []  # 👈 new line
+        self.exclude_degrees = exclude_degrees or []
 
         self.A_lut = None
         self.theta_grid = None
