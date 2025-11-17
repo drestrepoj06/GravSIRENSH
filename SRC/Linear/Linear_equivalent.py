@@ -50,10 +50,6 @@ class LinearEquivalentGenerator:
             self.mask
         ) = self.evaluate_on_test(save=True)
 
-
-    # ---------------------------------------------------------
-    # Helper: count NN parameters
-    # ---------------------------------------------------------
     @staticmethod
     def compute_siren_params(config):
         lmax = config["lmax"]
@@ -83,10 +79,6 @@ class LinearEquivalentGenerator:
     def params_to_lmax(params):
         return max(0, int(np.round(np.sqrt(params) - 1)))
 
-
-    # ---------------------------------------------------------
-    # Step 1 — Build linear model + save grid
-    # ---------------------------------------------------------
     def generate_linear_equiv(self):
         params = self.compute_siren_params(self.config)
         L_equiv = self.params_to_lmax(params)
@@ -96,9 +88,10 @@ class LinearEquivalentGenerator:
         print(f"🎯 Equivalent SH degree: {L_equiv}")
 
         clm_full = pysh.datasets.Earth.EGM2008(lmax=L_equiv)
-        clm_low  = pysh.datasets.Earth.EGM2008(lmax=2).pad(L_equiv)
 
-        clm_res = clm_full - clm_low
+        # Copy and zero degrees 0, 1, 2
+        clm_res = clm_full.copy()
+        clm_res.coeffs[:, :3, :] = 0.0  # l = 0, 1, 2  → exactly zero
 
         r0 = clm_res.r0
         r1 = r0 + self.altitude
@@ -177,7 +170,6 @@ class LinearEquivalentGenerator:
             print(f"📁 Saved linear gravity components in {self.run_dir}")
 
         return g_r, g_theta, g_phi, g_mag, mask
-
 
 
 
