@@ -266,35 +266,42 @@ class Gravity(pl.LightningModule):
     def forward(self, lon, lat):
         return self.model(lon, lat)
 
-    def _compute_loss(self, y_pred, y_true):
+    def _compute_loss(self, y_pred, y_true, return_components=False):
         if self.mode == "U":
-            return self.criterion(y_pred.view(-1), y_true.view(-1))
+            loss = self.criterion(y_pred.view(-1), y_true.view(-1))
+            return (loss, None, loss) if return_components else loss
 
         elif self.mode == "g_direct":
-            return self.criterion(y_pred.view(-1), y_true.view(-1))
+            loss = self.criterion(y_pred.view(-1), y_true.view(-1))
+            return (None, loss, loss) if return_components else loss
 
         elif self.mode == "g_indirect":
             U_pred, (g_theta, g_phi) = y_pred
             g_pred = torch.stack([g_theta, g_phi], dim=1)
-            return self.criterion(g_pred.view(-1), y_true.view(-1))
+            loss = self.criterion(g_pred.view(-1), y_true.view(-1))
+            return (None, loss, loss) if return_components else loss
 
-        elif self.mode == "U_g_direct":
-            U_pred, g_pred = y_pred
+        elif self.mode in ["U_g_direct", "U_g_indirect"]:
+            # Extract predictions
+            if self.mode == "U_g_direct":
+                U_pred, g_pred = y_pred
+            else:
+                # indirect: unpack gradients and stack
+                U_pred, (g_theta, g_phi) = y_pred
+                g_pred = torch.stack([g_theta, g_phi], dim=1)
+
+            # Extract true values
             U_true = y_true[:, 0:1]
             g_true = y_true[:, 1:]
+
+            # Compute component losses
             loss_U = self.criterion(U_pred.view(-1), U_true.view(-1))
             loss_g = self.criterion(g_pred.reshape(-1), g_true.reshape(-1))
-            return self.alpha_U * loss_U + (1 - self.alpha_U) * loss_g
 
+            # Combined loss
+            loss = self.alpha_U * loss_U + (1 - self.alpha_U) * loss_g
 
-        elif self.mode == "U_g_indirect":
-            U_pred, (g_theta, g_phi) = y_pred
-            U_true = y_true[:, 0:1]
-            g_true = y_true[:, 1:]
-            g_pred = torch.stack([g_theta, g_phi], dim=1)
-            loss_U = self.criterion(U_pred.view(-1), U_true.view(-1))
-            loss_g = self.criterion(g_pred.reshape(-1), g_true.reshape(-1))
-            return self.alpha_U * loss_U + (1 - self.alpha_U) * loss_g
+            return (loss_U, loss_g, loss) if return_components else loss
 
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
@@ -302,16 +309,35 @@ class Gravity(pl.LightningModule):
     def training_step(self, batch):
         lon_b, lat_b, y_true_b = [b.to(self.device) for b in batch]
         y_pred_b = self.model(lon_b, lat_b)
-        loss = self._compute_loss(y_pred_b, y_true_b)
-        self.log("train_loss", loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        return loss
+
+        # get separated losses
+        loss_U, loss_g, total_loss = self._compute_loss(y_pred_b, y_true_b, return_components=True)
+
+        # log total loss
+        self.log("train_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True)
+
+        # log components only if they exist (mode includes U and g)
+        if loss_U is not None:
+            self.log("train_U_loss", loss_U, on_step=False, on_epoch=True)
+        if loss_g is not None:
+            self.log("train_g_loss", loss_g, on_step=False, on_epoch=True)
+
+        return total_loss
 
     def validation_step(self, batch):
         lon_b, lat_b, y_true_b = [b.to(self.device) for b in batch]
         y_pred_b = self.model(lon_b, lat_b)
-        val_loss = self._compute_loss(y_pred_b, y_true_b)
-        self.log("val_loss", val_loss, on_step=False, on_epoch=True, prog_bar=True, logger=True)
-        return val_loss
+
+        loss_U, loss_g, total_loss = self._compute_loss(y_pred_b, y_true_b, return_components=True)
+
+        self.log("val_loss", total_loss, on_epoch=True, prog_bar=True)
+
+        if loss_U is not None:
+            self.log("val_U_loss", loss_U, on_epoch=True)
+        if loss_g is not None:
+            self.log("val_g_loss", loss_g, on_epoch=True)
+
+        return total_loss
 
     def configure_optimizers(self):
         """Use externally provided learning rate."""

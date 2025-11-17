@@ -115,16 +115,16 @@ def main():
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     mode = "g_indirect"
-    lr = 1e-4
-    batch_size = 10240
+    lr = 5e-3
+    batch_size = 262144
     lmax = 10
     hidden_layers = 2
     hidden_features = 8
     first_omega_0 = 20
     hidden_omega_0 = 1.0
     exclude_degrees = None
-    epochs = 1
-    alpha_U = 0.1
+    epochs = 10
+    alpha_U = 0.05
 
     run_name = (
         f"sh_siren_LR={lr}_mode={mode}_BS={batch_size}_"
