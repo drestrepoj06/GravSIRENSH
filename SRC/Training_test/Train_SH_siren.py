@@ -50,8 +50,7 @@ class GravityDataset(torch.utils.data.Dataset):
             if include_radial:
                 cols = ["dg_r_mGal"] + cols
             g_phys = df[cols].values
-            g_scaled = self.scaler.scale_gravity(g_phys)
-            self.y = torch.tensor(g_scaled, dtype=torch.float32)
+            self.y = torch.tensor(g_phys, dtype=torch.float32)
 
         # --- U + g (direct multitask) ---
         elif mode == "U_g_direct":
@@ -68,8 +67,7 @@ class GravityDataset(torch.utils.data.Dataset):
             U_phys = df["dU_m2_s2"].values
             g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
             U_scaled = self.scaler.scale_potential(U_phys)
-            g_scaled = self.scaler.scale_gravity(g_phys)
-            y = np.column_stack([U_scaled, g_scaled])
+            y = np.column_stack([U_scaled, g_phys])
             self.y = torch.tensor(y, dtype=torch.float32)
 
         else:
@@ -175,12 +173,12 @@ def main():
     model_path = os.path.join(run_dir, "model.pth")
     torch.save({
         "state_dict": module.model.state_dict(),
-            "scaler": {
-                "U_min": float(module.scaler.U_min) if getattr(module.scaler, "U_min", None) is not None else None,
-                "U_max": float(module.scaler.U_max) if getattr(module.scaler, "U_max", None) is not None else None,
-                "g_min": float(module.scaler.g_min) if getattr(module.scaler, "g_min", None) is not None else None,
-                "g_max": float(module.scaler.g_max) if getattr(module.scaler, "g_max", None) is not None else None,
-            }
+        "scaler": {
+            "U_mean": float(module.scaler.U_mean) if module.scaler.U_mean is not None else None,
+            "U_std": float(module.scaler.U_std) if module.scaler.U_std is not None else None,
+            "g_mean": module.scaler.g_mean.tolist() if module.scaler.g_mean is not None else None,
+            "g_std": module.scaler.g_std.tolist() if module.scaler.g_std is not None else None,
+        }
     }, model_path)
 
     config = {

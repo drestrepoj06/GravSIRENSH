@@ -54,10 +54,16 @@ def main(run_path=None):
 
     scaler_data = checkpoint["scaler"]
     scaler = SHSirenScaler(mode=mode)
-    scaler.U_min = scaler_data.get("U_min")
-    scaler.U_max = scaler_data.get("U_max")
-    scaler.g_min = scaler_data.get("g_min")
-    scaler.g_max = scaler_data.get("g_max")
+    scaler.U_mean = scaler_data.get("U_mean")
+    scaler.U_std = scaler_data.get("U_std")
+
+    g_mean = scaler_data.get("g_mean")
+    g_std = scaler_data.get("g_std")
+
+    if g_mean is not None:
+        scaler.g_mean = torch.tensor(g_mean, dtype=torch.float32, device=device)
+    if g_std is not None:
+        scaler.g_std = torch.tensor(g_std, dtype=torch.float32, device=device)
 
     # === Initialize model ===
     cache_path = os.path.join(base_dir, "Data", "cache_test.npy")
@@ -122,8 +128,8 @@ def main(run_path=None):
     elif mode == "g_indirect":
         U_pred, (g_theta, g_phi) = model(lon, lat)
         U_pred = scaler.unscale_potential(U_pred).detach()
-        g_theta = (g_theta * 1e5).detach()
-        g_phi = (g_phi * 1e5).detach()
+        g_theta = g_theta.detach()
+        g_phi = g_phi.detach()
         g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
 
         mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
@@ -147,8 +153,8 @@ def main(run_path=None):
     elif mode == "U_g_indirect":
         U_pred, (g_theta, g_phi) = model(lon, lat)
         U_pred = scaler.unscale_potential(U_pred).detach()
-        g_theta = (g_theta * 1e5).detach()
-        g_phi = (g_phi * 1e5).detach()
+        g_theta = g_theta.detach()
+        g_phi = g_phi.detach()
         g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
 
         mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)

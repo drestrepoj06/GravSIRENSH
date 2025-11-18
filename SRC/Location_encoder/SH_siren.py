@@ -15,79 +15,99 @@ import lightning.pytorch as pl
 # https://github.com/vsitzmann/siren/blob/4df34baee3f0f9c8f351630992c1fe1f69114b5f/explore_siren.ipynb
 class SHSirenScaler:
     """
-    Handles scaling of potential U and/or gravity g,
-    depending on experiment mode.
+    Handles scaling of potential U and/or gravity g using MEAN/STD scaling.
+    This avoids the catastrophic gradient amplification created by min–max scaling.
     """
+
     def __init__(self, mode="U", r_scale=6.371e6):
         self.mode = mode
         self.r_scale = r_scale
-        self.U_min = self.U_max = None
-        self.g_min = self.g_max = None
-        self.u_scale = None
+
+        # Potential stats
+        self.U_mean = None
+        self.U_std  = None
+
+        # Gravity stats (if direct g training)
+        self.g_mean = None
+        self.g_std  = None
 
     # === FITTING ===
     def fit(self, df):
-        # Fit potential whenever U is used (directly or for indirect g)
+        # Potential always needs standardization if used at all
         if self.mode in ["U", "g_indirect", "U_g_indirect", "U_g_direct"]:
-            self.U_min = float(df["dU_m2_s2"].min())
-            self.U_max = float(df["dU_m2_s2"].max())
-            self.u_scale = 0.5 * (self.U_max - self.U_min)
+            U = df["dU_m2_s2"].to_numpy()   # in m²/s²
+            self.U_mean = float(U.mean())
+            self.U_std  = float(U.std())
 
-        # Fit gravity whenever g is a target (direct) or part of the loss
-        if self.mode in ["g_direct", "g_indirect", "U_g_direct", "U_g_indirect"]:
+        if self.mode in ["g_direct", "U_g_direct"]:
             g_cols = ["dg_theta_mGal", "dg_phi_mGal"]
-            g_values = df[g_cols].to_numpy()
-            self.g_min = float(g_values.min())
-            self.g_max = float(g_values.max())
+            g_vals = df[g_cols].to_numpy()
+            self.g_mean = g_vals.mean(axis=0)   # shape (2,)
+            self.g_std  = g_vals.std(axis=0)    # shape (2,)
 
         return self
 
     # === POTENTIAL ===
     def scale_potential(self, U):
-        if self.U_min is None or self.U_max is None:
+        """Standardize U."""
+        if self.U_mean is None:
             raise ValueError("Scaler not fitted for potential.")
-        return 2 * (U - self.U_min) / (self.U_max - self.U_min) - 1
+        return (U - self.U_mean) / self.U_std
 
     def unscale_potential(self, U_scaled):
-        if self.U_min is None or self.U_max is None:
-            raise ValueError("Scaler not fitted for potential.")
-        return (U_scaled + 1) * 0.5 * (self.U_max - self.U_min) + self.U_min
+        """Inverse of standardization."""
+        return U_scaled * self.U_std + self.U_mean
 
-    # === ACCELERATION ===
+    # === DIRECT GRAVITY ===
     def scale_gravity(self, g):
-        """Scale g directly using its min/max."""
-        if self.g_min is None or self.g_max is None:
+        """Standardize g (theta, phi)."""
+        if self.g_mean is None:
             raise ValueError("Scaler not fitted for gravity.")
-        return 2 * (g - self.g_min) / (self.g_max - self.g_min) - 1
+        return (g - self.g_mean) / self.g_std
 
     def unscale_gravity(self, g_scaled):
-        """Inverse of scale_gravity."""
-        return (g_scaled + 1) * 0.5 * (self.g_max - self.g_min) + self.g_min
+        """Inverse standardization."""
+        return g_scaled * self.g_std + self.g_mean
 
+    # === INDIRECT GRAVITY (FROM POTENTIAL GRADS) ===
     def unscale_acceleration_from_potential(self, grads, lat, r=None):
         """
-        grads: (dU_dlon, dU_dlat, [dU_dr]) from model space.
-        Converts to physical accelerations using potential scaling.
+        grads = (dU_dlon_scaled, dU_dlat_scaled, [dU_dr_scaled])
+        These gradients come from the NN output in STANDARDIZED POTENTIAL space.
+
+        Converts them into PHYSICAL accelerations in m/s².
         """
-        if self.U_min is None or self.U_max is None:
+
+        if self.U_mean is None or self.U_std is None:
             raise ValueError("Scaler not fitted for potential (required for indirect g).")
 
-        S = 0.5 * (self.U_max - self.U_min)
-        deg2rad = np.pi / 180.0
-        dU_dlon, dU_dlat, *rest = grads
+        # recover the scaling factor
+        S = self.U_std   # <<<<< CRITICAL FIX: THIS IS THE ONLY SCALING YOU APPLY
 
+        dU_dlon_scaled, dU_dlat_scaled, *rest = grads
+        deg2rad = np.pi / 180.0
+
+        # radius
         if r is None:
-            r_phys = torch.tensor(self.r_scale, dtype=dU_dlon.dtype, device=dU_dlon.device)
+            r_phys = torch.tensor(self.r_scale, dtype=dU_dlon_scaled.dtype,
+                                  device=dU_dlon_scaled.device)
         else:
             r_phys = r
 
+        # convert lat to radians
         lat_rad = lat * deg2rad
-        dU_dlon_phys = S * (deg2rad / (r_phys * torch.cos(lat_rad))) * dU_dlon
-        dU_dlat_phys = S * (deg2rad / r_phys) * dU_dlat
 
+        # === Convert angular derivatives to physical gradients ===
+        # dU/dλ = (std_U) * (1/(r cos φ)) * dU_scaled/dlon
+        dU_dlon_phys = S * (deg2rad / (r_phys * torch.cos(lat_rad))) * dU_dlon_scaled
+
+        # dU/dφ = (std_U) * (1/r) * dU_scaled/dlat
+        dU_dlat_phys = S * (deg2rad / r_phys) * dU_dlat_scaled
+
+        # Radial derivative (if present)
         if rest:
-            dU_dr = rest[0]
-            dU_dr_phys = S / self.r_scale * dU_dr if dU_dr is not None else torch.zeros_like(dU_dlon)
+            dU_dr_scaled = rest[0]
+            dU_dr_phys = S * (1.0 / self.r_scale) * dU_dr_scaled
         else:
             dU_dr_phys = None
 
@@ -216,8 +236,8 @@ class SH_SIREN(nn.Module):
                     only_inputs=True
                 )
                 grads_phys = self.scaler.unscale_acceleration_from_potential(grads, lat=lat, r=r)
-                g_theta = -grads_phys[1]
-                g_phi = -grads_phys[0]
+                g_theta = -grads_phys[1]*1e5
+                g_phi = -grads_phys[0]*1e5
             return outputs, (g_theta, g_phi)
 
         # --- MODE 4: U + g (direct) ---
@@ -246,8 +266,8 @@ class SH_SIREN(nn.Module):
                     allow_unused=True
                 )
                 grads_phys = self.scaler.unscale_acceleration_from_potential(grads, lat=lat, r=r)
-                g_theta = -grads_phys[1]
-                g_phi = -grads_phys[0]
+                g_theta = -grads_phys[1]*1e5
+                g_phi = -grads_phys[0]*1e5
             return U_pred, (g_theta, g_phi)
 
         else:
