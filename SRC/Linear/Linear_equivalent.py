@@ -6,6 +6,11 @@ import numpy as np
 import pyshtools as pysh
 import pandas as pd
 import os
+import sys
+from SRC.Visualizations.Geographic_plots import GravityDataPlotter
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 
 class LinearEquivalentGenerator:
     """
@@ -172,4 +177,28 @@ class LinearEquivalentGenerator:
         return g_r, g_theta, g_phi, g_mag, mask
 
 
+data_path = os.path.join(base_dir, "Data", "Samples_248-2_240k_r0_train.parquet")
+run_dir = os.path.join(base_dir, "Outputs", "Runs", "sh_siren_LR=0.005_mode=g_indirect_BS=262144_lmax=10_layers=2_neurons=8_first_omega=20_hidden_omega=1.0_exclude_degrees=None")
 
+# Where to save linear equivalent file
+# LinearEquivalentGenerator(run_dir, data_path)
+
+plotter_potential = GravityDataPlotter(
+    data_path=data_path,
+    output_dir=run_dir,
+    predictions_dir=None,
+    linear_dir=None,
+    target_type="potential"
+)
+plotter_potential.plot_map()
+plotter_potential.plot_scatter()
+
+plotter_accel = GravityDataPlotter(
+    data_path=data_path,
+    output_dir=run_dir,
+    predictions_dir=None,
+    linear_dir=None,
+    target_type="acceleration"
+)
+plotter_accel.plot_map()
+plotter_accel.plot_scatter()

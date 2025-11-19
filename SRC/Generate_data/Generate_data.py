@@ -158,14 +158,14 @@ def main():
     data_dir = os.path.join(base_dir, 'Data')
     os.makedirs(data_dir, exist_ok=True)
 
-    lmax_full = 2190
+    lmax_full = 248
     lmax_base = 2
     altitude = 0.0
 
     generator_train = GravityDataGenerator(
         lmax_full=lmax_full,
         lmax_base=lmax_base,
-        n_samples=5000000,
+        n_samples=240000,
         mode="train",
         output_dir=data_dir,
         altitude=altitude
@@ -175,7 +175,7 @@ def main():
     generator_test = GravityDataGenerator(
         lmax_full=lmax_full,
         lmax_base=lmax_base,
-        n_samples=250000,
+        n_samples=12000,
         mode="test",
         output_dir=data_dir,
         altitude=altitude

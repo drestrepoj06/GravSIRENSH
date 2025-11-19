@@ -33,13 +33,12 @@ class SHSirenScaler:
 
     # === FITTING ===
     def fit(self, df):
-        # Potential always needs standardization if used at all
-        if self.mode in ["U", "g_indirect", "U_g_indirect", "U_g_direct"]:
+        if self.mode in ["U", "g_indirect", "U_g_indirect", "U_g_direct", "g_hybrid", "U_g_hybrid"]:
             U = df["dU_m2_s2"].to_numpy()   # in m²/s²
             self.U_mean = float(U.mean())
             self.U_std  = float(U.std())
 
-        if self.mode in ["g_direct", "U_g_direct"]:
+        if self.mode in ["g_direct", "U_g_direct", "g_hybrid", "U_g_hybrid", "U_g_indirect"]:
             g_cols = ["dg_theta_mGal", "dg_phi_mGal"]
             g_vals = df[g_cols].to_numpy()
             self.g_mean = g_vals.mean(axis=0)   # shape (2,)
@@ -82,7 +81,7 @@ class SHSirenScaler:
             raise ValueError("Scaler not fitted for potential (required for indirect g).")
 
         # recover the scaling factor
-        S = self.U_std   # <<<<< CRITICAL FIX: THIS IS THE ONLY SCALING YOU APPLY
+        S = self.U_std
 
         dU_dlon_scaled, dU_dlat_scaled, *rest = grads
         deg2rad = np.pi / 180.0
@@ -139,6 +138,8 @@ class SH_SIREN(nn.Module):
           - "g_indirect"     : predict potential and derive g = -∇U
           - "U_g_direct"     : predict potential and g directly (multi-output)
           - "U_g_indirect"   : predict potential and derive g = -∇U
+          - "g_hybrid"      : predict g directly and force the gradient of U to be equal to gpred
+          - "U_g_hybrid"    : predict U and g directly and force the gradient of U to be equal to gpred
         """
         super().__init__()
         self.device = device
@@ -170,7 +171,7 @@ class SH_SIREN(nn.Module):
             out_features = 1
         elif mode in ["g_direct"]:
             out_features = 2  # (g_theta, g_phi)
-        elif mode in ["U_g_direct", "U_g_indirect"]:
+        elif mode in ["U_g_direct", "U_g_indirect", "g_hybrid", "U_g_hybrid"]:
             out_features = 3  # (U, g_theta, g_phi)
         else:
             raise ValueError(f"Unknown mode '{mode}'")
@@ -240,13 +241,53 @@ class SH_SIREN(nn.Module):
                 g_phi = -grads_phys[0]*1e5
             return outputs, (g_theta, g_phi)
 
-        # --- MODE 4: U + g (direct) ---
+        # --- MODE 4: g (hybrid) ---#
+
+        elif self.mode == "g_hybrid":
+            # model outputs: [U_pred, g_theta_pred, g_phi_pred]
+            U_pred = outputs[:, 0:1]
+            g_pred = outputs[:, 1:]  # shape: (N, 2)
+
+            # compute ∇U_pred using autograd
+            with torch.set_grad_enabled(True):
+                lon = lon.to(self.device).requires_grad_(True)
+                lat = lat.to(self.device).requires_grad_(True)
+
+                # recompute U_pred with grad-enabled coords
+                Y = self.embedding(lon, lat)
+                out2 = self.siren(Y)
+                U2 = out2[:, 0:1]
+
+                grads = torch.autograd.grad(
+                    outputs=U2,
+                    inputs=[lon, lat],
+                    grad_outputs=torch.ones_like(U2),
+                    create_graph=self.training,
+                    retain_graph=self.training,
+                    only_inputs=True,
+                    allow_unused=True
+                )
+
+                grads_phys = self.scaler.unscale_acceleration_from_potential(
+                    grads, lat=lat, r=r
+                )
+                g_theta_from_U = -grads_phys[1] * 1e5
+                g_phi_from_U = -grads_phys[0] * 1e5
+
+            # return predicted g, and computed g from ∇U
+            return {
+                "U_pred": U_pred,
+                "g_pred": g_pred,
+                "g_from_gradU": torch.stack([g_theta_from_U, g_phi_from_U], dim=-1)
+            }
+
+        # --- MODE 5: U + g (direct) ---
         elif self.mode == "U_g_direct":
             U_pred = outputs[:, 0:1]
             g_pred = outputs[:, 1:]
             return U_pred, g_pred
 
-        # --- MODE 5: U + g (indirect) ---
+        # --- MODE 6: U + g (indirect) ---
         elif self.mode == "U_g_indirect":
             with torch.set_grad_enabled(True):
                 lon = lon.to(self.device).requires_grad_(True)
@@ -270,14 +311,49 @@ class SH_SIREN(nn.Module):
                 g_phi = -grads_phys[0]*1e5
             return U_pred, (g_theta, g_phi)
 
+        # --- MODE 7: U + g (hybrid) ---
+        elif self.mode == "U_g_hybrid":
+
+            U_pred = outputs[:, 0:1]
+            g_pred = outputs[:, 1:]  # shape (N,2)
+
+            with torch.set_grad_enabled(True):
+                lon = lon.to(self.device).requires_grad_(True)
+                lat = lat.to(self.device).requires_grad_(True)
+
+                Y = self.embedding(lon, lat)
+                out2 = self.siren(Y)
+                U2 = out2[:, 0:1]
+
+                grads = torch.autograd.grad(
+                    outputs=U2,
+                    inputs=[lon, lat],
+                    grad_outputs=torch.ones_like(U2),
+                    create_graph=self.training,
+                    retain_graph=self.training,
+                    only_inputs=True,
+                    allow_unused=True,
+                )
+
+                grads_phys = self.scaler.unscale_acceleration_from_potential(
+                    grads, lat=lat, r=r
+                )
+                g_theta_from_U = -grads_phys[1] * 1e5
+                g_phi_from_U = -grads_phys[0] * 1e5
+
+            return U_pred, g_pred, (g_theta_from_U, g_phi_from_U)
         else:
             raise ValueError(f"Unsupported mode '{self.mode}'")
 
 class Gravity(pl.LightningModule):
     def __init__(self, model_cfg, scaler, lr=1e-4):
         super().__init__()
-        self.alpha_U = model_cfg.pop("alpha_U", 0.9)
         self.model = SH_SIREN(**model_cfg)
+        self.register_buffer("U_std_buf", torch.as_tensor(scaler.U_std, dtype=torch.float32))
+        self.register_buffer("g_std_buf", torch.as_tensor(scaler.g_std, dtype=torch.float32))
+        self.log_sigma_U = torch.nn.Parameter(torch.tensor(0.0))
+        self.log_sigma_g = torch.nn.Parameter(torch.tensor(0.0))
+        self.log_sigma_consistency = torch.nn.Parameter(torch.tensor(0.0))
         self.scaler = scaler
         self.mode = model_cfg.get("mode", "U")
         self.criterion = nn.MSELoss()
@@ -287,78 +363,191 @@ class Gravity(pl.LightningModule):
         return self.model(lon, lat)
 
     def _compute_loss(self, y_pred, y_true, return_components=False):
+
         if self.mode == "U":
             loss = self.criterion(y_pred.view(-1), y_true.view(-1))
+            loss = loss.mean()
             return (loss, None, loss) if return_components else loss
 
         elif self.mode == "g_direct":
             loss = self.criterion(y_pred.view(-1), y_true.view(-1))
+            loss = loss.mean()
             return (None, loss, loss) if return_components else loss
 
         elif self.mode == "g_indirect":
             U_pred, (g_theta, g_phi) = y_pred
             g_pred = torch.stack([g_theta, g_phi], dim=1)
             loss = self.criterion(g_pred.view(-1), y_true.view(-1))
+            loss = loss.mean()
             return (None, loss, loss) if return_components else loss
 
+        elif self.mode == "g_hybrid":
+            U_pred = y_pred["U_pred"]  # (N,1)
+            g_pred = y_pred["g_pred"]  # (N,2)
+            Ugrad_pred = y_pred["g_from_gradU"]  # (N,2)
+
+            g_true = y_true[:, 1:]  # shape (N,2)
+
+            loss_g = self.criterion(
+                g_pred.reshape(-1),
+                g_true.reshape(-1)
+            ).mean()
+
+            loss_consistency = self.criterion(
+                Ugrad_pred.reshape(-1),
+                g_pred.reshape(-1)
+            ).mean()
+            sigma_g = torch.exp(self.log_sigma_g)
+            sigma_consist = torch.exp(self.log_sigma_consistency)
+
+            loss = (loss_g / (2 * sigma_g ** 2)) \
+                   + (loss_consistency / (2 * sigma_consist ** 2)) \
+                   + torch.log(sigma_g * sigma_consist)
+
+            if return_components:
+                return (loss_g, loss_consistency, loss)
+
+            return loss
+
         elif self.mode in ["U_g_direct", "U_g_indirect"]:
+
             # Extract predictions
             if self.mode == "U_g_direct":
                 U_pred, g_pred = y_pred
+                normalize = False
             else:
-                # indirect: unpack gradients and stack
                 U_pred, (g_theta, g_phi) = y_pred
                 g_pred = torch.stack([g_theta, g_phi], dim=1)
+                normalize = True
 
-            # Extract true values
             U_true = y_true[:, 0:1]
             g_true = y_true[:, 1:]
 
-            # Compute component losses
             loss_U = self.criterion(U_pred.view(-1), U_true.view(-1))
             loss_g = self.criterion(g_pred.reshape(-1), g_true.reshape(-1))
 
-            # Combined loss
-            loss = self.alpha_U * loss_U + (1 - self.alpha_U) * loss_g
+            loss_U = loss_U.mean()
+            loss_g = loss_g.mean()
 
+            # optional normalization
+            if normalize:
+                loss_U = loss_U / (self.U_std_buf ** 2)
+                loss_g = loss_g / (self.g_std_buf ** 2)
+
+            # learned weighting
+            sigma_U = torch.exp(self.log_sigma_U)
+            sigma_g = torch.exp(self.log_sigma_g)
+
+            loss = (loss_U / (2 * sigma_U ** 2)) + (loss_g / (2 * sigma_g ** 2))
+            loss += torch.log(sigma_U * sigma_g)
             return (loss_U, loss_g, loss) if return_components else loss
+
+        elif self.mode == "U_g_hybrid":
+
+            U_pred, g_pred, (gtheta_from_U, gphi_from_U) = y_pred
+            Ugrad_pred = torch.stack([gtheta_from_U, gphi_from_U], dim=1)
+
+            U_true = y_true[:, 0:1]
+            g_true = y_true[:, 1:]
+
+            # (1) U_pred vs U_true
+            loss_U = self.criterion(U_pred.reshape(-1), U_true.reshape(-1)).mean()
+
+            # (2) g_pred vs g_true
+            loss_g = self.criterion(g_pred.reshape(-1), g_true.reshape(-1)).mean()
+
+            # (3) ∇U_pred vs g_pred
+            loss_consistency = self.criterion(
+                Ugrad_pred.reshape(-1),
+                g_pred.reshape(-1)
+            ).mean()
+
+            sigma_U = torch.exp(self.log_sigma_U)
+            sigma_g = torch.exp(self.log_sigma_g)
+            sigma_consist = torch.exp(self.log_sigma_consistency)
+
+            loss = (loss_U / (2 * sigma_U ** 2)) \
+                   + (loss_g / (2 * sigma_g ** 2)) \
+                   + (loss_consistency / (2 * sigma_consist ** 2)) \
+                   + torch.log(sigma_U * sigma_g * sigma_consist)
+
+            if return_components:
+                return (loss_U, loss_g, loss_consistency, loss)
+            return loss
 
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
 
-    def training_step(self, batch):
+    def _log_sigmas(self, prefix):
+
+        # sigma_U
+        if hasattr(self, "log_sigma_U"):
+            sigma_U = torch.exp(self.log_sigma_U)
+            self.log(f"{prefix}_sigma_U", sigma_U, on_epoch=True)
+
+        # sigma_g
+        if hasattr(self, "log_sigma_g"):
+            sigma_g = torch.exp(self.log_sigma_g)
+            self.log(f"{prefix}_sigma_g", sigma_g, on_epoch=True)
+
+        # sigma_consistency (only in hybrid modes)
+        if hasattr(self, "log_sigma_consistency"):
+            sigma_consistency = torch.exp(self.log_sigma_consistency)
+            self.log(f"{prefix}_sigma_consistency", sigma_consistency, on_epoch=True)
+
+    def training_step(self, batch, batch_idx=None):
+
         lon_b, lat_b, y_true_b = [b.to(self.device) for b in batch]
         y_pred_b = self.model(lon_b, lat_b)
 
-        # get separated losses
-        loss_U, loss_g, total_loss = self._compute_loss(y_pred_b, y_true_b, return_components=True)
+        loss_components = self._compute_loss(y_pred_b, y_true_b, return_components=True)
 
-        # log total loss
+        # ---- total loss ----
+        total_loss = loss_components[-1]
+        if isinstance(total_loss, torch.Tensor) and total_loss.ndim > 0:
+            total_loss = total_loss.mean()
+
         self.log("train_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True)
 
-        # log components only if they exist (mode includes U and g)
-        if loss_U is not None:
-            self.log("train_U_loss", loss_U, on_step=False, on_epoch=True)
-        if loss_g is not None:
-            self.log("train_g_loss", loss_g, on_step=False, on_epoch=True)
+        # ---- component losses ----
+        component_names = ["U", "g", "consistency"]
+
+        for name, comp in zip(component_names, loss_components[:-1]):
+            if comp is not None:
+                if isinstance(comp, torch.Tensor) and comp.ndim > 0:
+                    comp = comp.mean()  # component fix
+                self.log(f"train_{name}_loss", comp, on_step=False, on_epoch=True)
+
+        # ---- sigmas ----
+        self._log_sigmas("train")
 
         return total_loss
 
-    def validation_step(self, batch):
+    def validation_step(self, batch, batch_idx=None):
+
         lon_b, lat_b, y_true_b = [b.to(self.device) for b in batch]
         y_pred_b = self.model(lon_b, lat_b)
 
-        loss_U, loss_g, total_loss = self._compute_loss(y_pred_b, y_true_b, return_components=True)
+        loss_components = self._compute_loss(y_pred_b, y_true_b, return_components=True)
+
+        total_loss = loss_components[-1]
+        if isinstance(total_loss, torch.Tensor) and total_loss.ndim > 0:
+            total_loss = total_loss.mean()  # REQUIRED FIX
 
         self.log("val_loss", total_loss, on_epoch=True, prog_bar=True)
 
-        if loss_U is not None:
-            self.log("val_U_loss", loss_U, on_epoch=True)
-        if loss_g is not None:
-            self.log("val_g_loss", loss_g, on_epoch=True)
+        component_names = ["U", "g", "consistency"]
+
+        for name, comp in zip(component_names, loss_components[:-1]):
+            if comp is not None:
+                if isinstance(comp, torch.Tensor) and comp.ndim > 0:
+                    comp = comp.mean()  # component fix
+                self.log(f"val_{name}_loss", comp, on_epoch=True)
+
+        self._log_sigmas("val")
 
         return total_loss
 
     def configure_optimizers(self):
         """Use externally provided learning rate."""
-        return torch.optim.Adam(self.model.parameters(), lr=self.lr)
+        return torch.optim.Adam(self.parameters(), lr=self.lr)

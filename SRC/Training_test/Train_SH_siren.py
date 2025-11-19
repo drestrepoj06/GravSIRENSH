@@ -19,11 +19,13 @@ class GravityDataset(torch.utils.data.Dataset):
     def __init__(self, df, scaler, mode="g_direct", include_radial=False):
         """
         mode:
-          - "U"              → learn potential
-          - "g_direct"       → learn acceleration directly (scaled)
-          - "g_indirect"     → learn acceleration derived from potential (target = g)
-          - "U_g_direct"     → multitask (U + g_direct)
-          - "U_g_indirect"   → multitask (U + gradients(U))
+          - "U"              : predict potential only
+          - "g_direct"       : predict gravity components directly
+          - "g_indirect"     : predict potential and derive g = -∇U
+          - "U_g_direct"     : predict potential and g directly (multi-output)
+          - "U_g_indirect"   : predict potential and derive g = -∇U
+          - "g_hybrid"      : predict g directly and force the gradient of U to be equal to gpred
+          - "U_g_hybrid"    : predict U and g directly and force the gradient of U to be equal to gpred
         """
         self.mode = mode
         self.scaler = scaler
@@ -52,6 +54,17 @@ class GravityDataset(torch.utils.data.Dataset):
             g_phys = df[cols].values
             self.y = torch.tensor(g_phys, dtype=torch.float32)
 
+        elif mode == "g_hybrid":
+            U_phys = df["dU_m2_s2"].values
+            U_scaled = self.scaler.scale_potential(U_phys)
+            cols = ["dg_theta_mGal", "dg_phi_mGal"]
+            if include_radial:
+                cols = ["dg_r_mGal"] + cols
+            g_phys = df[cols].values
+            g_scaled = self.scaler.scale_gravity(g_phys)
+            y = np.column_stack([U_scaled, g_scaled])
+            self.y = torch.tensor(y, dtype=torch.float32)
+
         # --- U + g (direct multitask) ---
         elif mode == "U_g_direct":
             U_phys = df["dU_m2_s2"].values
@@ -70,6 +83,13 @@ class GravityDataset(torch.utils.data.Dataset):
             y = np.column_stack([U_scaled, g_phys])
             self.y = torch.tensor(y, dtype=torch.float32)
 
+        elif mode == "U_g_hybrid":
+            U_phys = df["dU_m2_s2"].values
+            g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
+            U_scaled = self.scaler.scale_potential(U_phys)
+            g_scaled = self.scaler.scale_gravity(g_phys)
+            y = np.column_stack([U_scaled, g_scaled])
+            self.y = torch.tensor(y, dtype=torch.float32)
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
@@ -113,7 +133,7 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "g_indirect"
+    mode = "g_direct"
     lr = 5e-3
     batch_size = 262144
     lmax = 10
@@ -123,7 +143,6 @@ def main():
     hidden_omega_0 = 1.0
     exclude_degrees = None
     epochs = 1
-    alpha_U = 0.05
 
     run_name = (
         f"sh_siren_LR={lr}_mode={mode}_BS={batch_size}_"
@@ -145,8 +164,7 @@ def main():
         scaler=scaler,
         cache_path=os.path.join(base_dir, "Data", "cache_train.npy"),
         exclude_degrees=exclude_degrees,
-        mode=mode,
-        alpha_U = alpha_U
+        mode=mode
     )
 
     datamodule = GravityDataModule(train_df, val_df, scaler=scaler, mode=mode, batch_size=batch_size)
@@ -163,7 +181,7 @@ def main():
         max_epochs=epochs,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         devices=1,
-        log_every_n_steps=50,
+        log_every_n_steps=1,
         num_sanity_val_steps=0,
         logger=wandb_logger
     )
@@ -189,7 +207,6 @@ def main():
         "epochs": epochs,
         "batch_size": batch_size,
         "lmax": lmax,
-        "alpha_U (For U_g models)": alpha_U,
         "hidden_layers": hidden_layers,
         "hidden_features": hidden_features,
         "first_omega_0": first_omega_0,
@@ -216,7 +233,7 @@ def main():
     output_dir = run_dir
     predictions_dir = run_dir
 
-    modes_with_potential = ["U", "U_g_direct",  "g_indirect", "U_g_indirect"]
+    modes_with_potential = ["U", "U_g_direct",  "g_indirect", "U_g_indirect", "g_hybrid", "U_g_hybrid"]
     modes_accel_only = ["g_direct"]
 
     if mode in modes_with_potential:
