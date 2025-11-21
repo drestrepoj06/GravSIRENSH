@@ -49,10 +49,9 @@ class GravityDataset(torch.utils.data.Dataset):
         # --- Indirect gravity (predict U, compare g = ∇U vs target g) ---
         elif mode == "g_indirect":
             cols = ["dg_theta_mGal", "dg_phi_mGal"]
-            if include_radial:
-                cols = ["dg_r_mGal"] + cols
             g_phys = df[cols].values
-            self.y = torch.tensor(g_phys, dtype=torch.float32)
+            g_scaled = self.scaler.scale_gravity(g_phys)
+            self.y = torch.tensor(g_scaled, dtype=torch.float32)
 
         elif mode == "g_hybrid":
             U_phys = df["dU_m2_s2"].values
@@ -76,11 +75,11 @@ class GravityDataset(torch.utils.data.Dataset):
 
         # --- U + g (indirect multitask) ---
         elif mode == "U_g_indirect":
-            # Train both U and g derived from U against reference g
             U_phys = df["dU_m2_s2"].values
             g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
             U_scaled = self.scaler.scale_potential(U_phys)
-            y = np.column_stack([U_scaled, g_phys])
+            g_scaled = self.scaler.scale_gravity(g_phys)
+            y = np.column_stack([U_scaled, g_scaled])
             self.y = torch.tensor(y, dtype=torch.float32)
 
         elif mode == "U_g_hybrid":
