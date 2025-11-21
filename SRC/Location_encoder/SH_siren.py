@@ -349,13 +349,14 @@ class Gravity(pl.LightningModule):
     def __init__(self, model_cfg, scaler, lr=1e-4):
         super().__init__()
         self.model = SH_SIREN(**model_cfg)
-        self.register_buffer("U_std_buf", torch.as_tensor(scaler.U_std, dtype=torch.float32))
-        self.register_buffer("g_std_buf", torch.as_tensor(scaler.g_std, dtype=torch.float32))
         self.log_sigma_U = torch.nn.Parameter(torch.tensor(0.0))
         self.log_sigma_g = torch.nn.Parameter(torch.tensor(0.0))
         self.log_sigma_consistency = torch.nn.Parameter(torch.tensor(0.0))
         self.scaler = scaler
         self.mode = model_cfg.get("mode", "U")
+        if self.mode in ["g_hybrid", "U_g_direct", "U_g_indirect", "U_g_hybrid"]:
+            self.register_buffer("U_std_buf", torch.as_tensor(scaler.U_std, dtype=torch.float32))
+            self.register_buffer("g_std_buf", torch.as_tensor(scaler.g_std, dtype=torch.float32))
         self.criterion = nn.MSELoss()
         self.lr = lr
 
