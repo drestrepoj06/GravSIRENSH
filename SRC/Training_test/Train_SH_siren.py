@@ -4,247 +4,283 @@ jhonr"""
 import os
 import sys
 import torch
-import torch.nn as nn
-from torch.utils.data import TensorDataset, DataLoader
+from torch.utils.data import DataLoader
 import pandas as pd
-import time
-from sklearn.model_selection import train_test_split
-import numpy as np
 from datetime import datetime
 import json
+import lightning.pytorch as pl
+from lightning.pytorch.loggers import WandbLogger
+import numpy as np
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.Location_encoder.SH_siren import SH_SIREN, SHSirenScaler
+from SRC.Location_encoder.SH_siren import SHSirenScaler, Gravity
+import SRC.Training_test.Test_SH_siren as test_script
+from SRC.Visualizations.Geographic_plots import GravityDataPlotter
+from SRC.Linear.Linear_equivalent import LinearEquivalentGenerator
+
+
+
+
+class GravityDataset(torch.utils.data.Dataset):
+    def __init__(self, df, scaler, mode="g_direct", include_radial=False):
+        """
+        mode:
+          - "U"              : predict potential only
+          - "g_direct"       : predict gravity components directly
+          - "g_indirect"     : predict potential and derive g = -∇U
+          - "U_g_direct"     : predict potential and g directly (multi-output)
+          - "U_g_indirect"   : predict potential and derive g = -∇U
+          - "g_hybrid"      : predict g directly and force the gradient of U to be equal to gpred
+          - "U_g_hybrid"    : predict U and g directly and force the gradient of U to be equal to gpred
+        """
+        self.mode = mode
+        self.scaler = scaler
+
+        self.lon = torch.tensor(df["lon"].values, dtype=torch.float32)
+        self.lat = torch.tensor(df["lat"].values, dtype=torch.float32)
+
+        if mode == "U":
+            U_phys = df["dU_m2_s2"].values
+            U_scaled = self.scaler.scale_potential(U_phys)
+            self.y = torch.tensor(U_scaled, dtype=torch.float32).unsqueeze(1)
+
+        elif mode in ["g_direct"]:
+            cols = ["dg_theta_mGal", "dg_phi_mGal"]
+            if include_radial:
+                cols = ["dg_r_mGal"] + cols
+            g_phys = df[cols].values
+            g_scaled = self.scaler.scale_gravity(g_phys)
+            self.y = torch.tensor(g_scaled, dtype=torch.float32)
+
+        # --- Indirect gravity (predict U, compare g = ∇U vs target g) ---
+        elif mode == "g_indirect":
+            cols = ["dg_theta_mGal", "dg_phi_mGal"]
+            g_phys = df[cols].values
+            g_scaled = self.scaler.scale_gravity(g_phys)
+            self.y = torch.tensor(g_scaled, dtype=torch.float32)
+
+        elif mode == "g_hybrid":
+            U_phys = df["dU_m2_s2"].values
+            U_scaled = self.scaler.scale_potential(U_phys)
+            cols = ["dg_theta_mGal", "dg_phi_mGal"]
+            if include_radial:
+                cols = ["dg_r_mGal"] + cols
+            g_phys = df[cols].values
+            g_scaled = self.scaler.scale_gravity(g_phys)
+            y = np.column_stack([U_scaled, g_scaled])
+            self.y = torch.tensor(y, dtype=torch.float32)
+
+        # --- U + g (direct multitask) ---
+        elif mode == "U_g_direct":
+            U_phys = df["dU_m2_s2"].values
+            g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
+            U_scaled = self.scaler.scale_potential(U_phys)
+            g_scaled = self.scaler.scale_gravity(g_phys)
+            y = np.column_stack([U_scaled, g_scaled])
+            self.y = torch.tensor(y, dtype=torch.float32)
+
+        # --- U + g (indirect multitask) ---
+        elif mode == "U_g_indirect":
+            U_phys = df["dU_m2_s2"].values
+            g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
+            U_scaled = self.scaler.scale_potential(U_phys)
+            g_scaled = self.scaler.scale_gravity(g_phys)
+            y = np.column_stack([U_scaled, g_scaled])
+            self.y = torch.tensor(y, dtype=torch.float32)
+
+        elif mode == "U_g_hybrid":
+            U_phys = df["dU_m2_s2"].values
+            g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
+            U_scaled = self.scaler.scale_potential(U_phys)
+            g_scaled = self.scaler.scale_gravity(g_phys)
+            y = np.column_stack([U_scaled, g_scaled])
+            self.y = torch.tensor(y, dtype=torch.float32)
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
+
+    def __len__(self):
+        return len(self.lon)
+
+    def __getitem__(self, idx):
+        return self.lon[idx], self.lat[idx], self.y[idx]
+
+
+class GravityDataModule(pl.LightningDataModule):
+    def __init__(self, train_df, val_df, scaler, mode="g_direct", batch_size=10240):
+        super().__init__()
+        self.train_df = train_df
+        self.val_df = val_df
+        self.scaler = scaler
+        self.mode = mode
+        self.batch_size = batch_size
+
+    def setup(self, stage=None):
+        self.train_dataset = GravityDataset(self.train_df, self.scaler, mode=self.mode)
+        self.val_dataset = GravityDataset(self.val_df, self.scaler, mode=self.mode)
+
+    def train_dataloader(self):
+        return DataLoader(self.train_dataset, batch_size=self.batch_size,
+                          shuffle=True, num_workers=8, pin_memory=torch.cuda.is_available(), persistent_workers=True)
+
+    def val_dataloader(self):
+        return DataLoader(self.val_dataset, batch_size=self.batch_size,
+                          shuffle=False, num_workers=8, pin_memory=torch.cuda.is_available(), persistent_workers=True)
 
 
 def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    data_path = os.path.join(base_dir, 'Data', 'Samples_10-2_1k_r0_train.parquet')
+    data_path = os.path.join(base_dir, 'Data', 'Samples_2190-2_5.0M_r0_train.parquet')
 
+    print("📂 Loading dataset...")
     df = pd.read_parquet(data_path)
+    val_df = df.sample(n=500_000, random_state=42)
+    train_df = df.drop(val_df.index)
 
-    train_df, val_df = train_test_split(df, test_size=0.1, random_state=42)
-
-    scaler = SHSirenScaler(r_scale=6378136.3)
-    scaler.fit_potential(train_df["dV_m2_s2"].values)
-
-    for subdf in [train_df, val_df]:
-        subdf["a_theta_mps2"] = subdf["dg_theta_mGal"] * 1e-5
-        subdf["a_phi_mps2"] = subdf["dg_phi_mGal"] * 1e-5
+    print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    def df_to_tensors(df):
-        lon = torch.tensor(df["lon"].values, dtype=torch.float32)
-        lat = torch.tensor(df["lat"].values, dtype=torch.float32)
-        r = torch.tensor(df["radius_m"].values, dtype=torch.float32)
-        y = torch.tensor(df["dV_m2_s2"].values, dtype=torch.float32).unsqueeze(1)
-        a_true = torch.tensor(
-            df[["a_theta_mps2", "a_phi_mps2"]].values,
-            dtype=torch.float32
-        )
-        return lon, lat, r, y, a_true
-
-    lon_train, lat_train, r_train, y_train, a_train = df_to_tensors(train_df)
-    lon_val, lat_val, r_val, y_val, a_val = df_to_tensors(val_df)
-
-    train_dataset = TensorDataset(lon_train, lat_train, r_train, y_train, a_train)
-    val_dataset = TensorDataset(lon_val, lat_val, r_val, y_val, a_val)
-
-    # num_workers = max(1, os.cpu_count() // 2) uncomment in GPU
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=10240,
-        shuffle=True,
-        num_workers=0,
-        pin_memory=torch.cuda.is_available(),
-        # persistent_workers=True
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=10240,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=torch.cuda.is_available(),
-        # persistent_workers=True
-    )
-
+    mode = "g_direct"
+    lr = 5e-3
+    batch_size = 262144
     lmax = 10
+    hidden_layers = 2
     hidden_features = 8
-    hidden_layers = 20
-    out_features = 1
     first_omega_0 = 20
     hidden_omega_0 = 1.0
+    exclude_degrees = None
+    epochs = 1
 
-    model = SH_SIREN(
+    run_name = (
+        f"sh_siren_LR={lr}_mode={mode}_BS={batch_size}_"
+        f"lmax={lmax}_layers={hidden_layers}_neurons={hidden_features}_"
+        f"first_omega={first_omega_0}_hidden_omega={hidden_omega_0}_"
+        f"exclude_degrees={exclude_degrees}"
+    )
+    run_dir = os.path.join(base_dir, "Outputs", "Runs", run_name)
+    os.makedirs(run_dir, exist_ok=True)
+    print(f"🧩 Run directory: {run_dir}")
+    scaler = SHSirenScaler(mode=mode).fit(train_df)
+    model_cfg = dict(
         lmax=lmax,
         hidden_features=hidden_features,
         hidden_layers=hidden_layers,
-        out_features=out_features,
         first_omega_0=first_omega_0,
         hidden_omega_0=hidden_omega_0,
         device=device,
-        scaler=scaler
+        scaler=scaler,
+        exclude_degrees=exclude_degrees,
+        mode=mode
     )
 
-    criterion_val = nn.MSELoss()  # for potential value loss
-    alpha = 1.0
-    beta = 50.0
+    datamodule = GravityDataModule(train_df, val_df, scaler=scaler, mode=mode, batch_size=batch_size)
+    module = Gravity(model_cfg, scaler, lr=lr)
+    pl.seed_everything(42, workers=True)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=6e-4)
+    wandb_logger = WandbLogger(
+        project="grav_siren",
+        name=run_name,
+        log_model=False
+    )
 
-    epochs = 500
-    train_losses = []
-    val_losses = []
+    trainer = pl.Trainer(
+        max_epochs=epochs,
+        accelerator="gpu" if torch.cuda.is_available() else "cpu",
+        devices=1,
+        log_every_n_steps=1,
+        num_sanity_val_steps=0,
+        logger=wandb_logger
+    )
 
-    for epoch in range(epochs):
-        epoch_start = time.time()
-        model.train()
-        train_loss = 0.0
+    trainer.fit(module, datamodule=datamodule)
 
-        for lon_b, lat_b, r_b, y_b, a_true_b in train_loader:
-            lon_b = lon_b.to(device)
-            lat_b = lat_b.to(device)
-            r_b = r_b.to(device)
-            y_b = y_b.to(device)
-            a_true_b = a_true_b.to(device)
-
-            # === Diagnostic printout (only for first few batches) ===
-            if epoch == 0 and train_loss == 0.0:  # only print once per epoch or batch
-                r_bar = r_b / scaler.r_scale if scaler.r_scale else r_b
-                print("──── DIAGNOSTIC ────")
-                print(f"lon range: {lon_b.min():.3f} → {lon_b.max():.3f}")
-                print(f"lat range: {lat_b.min():.3f} → {lat_b.max():.3f}")
-                print(f"r range:   {r_b.min():.3e} → {r_b.max():.3e}")
-                print(f"r_bar range: {r_bar.min():.6f} → {r_bar.max():.6f}")
-                print(f"mean(r): {r_b.mean():.3e}  std(r): {r_b.std():.3e}")
-                print(f"mean(y): {y_b.mean():.3e}  std(y): {y_b.std():.3e}")
-                print("────────────────────")
-
-            optimizer.zero_grad()
-
-            # === Forward pass with gradients ===
-            y_pred, grads_scaled = model(lon_b, lat_b, r_b, return_gradients=True, physical_units=False)
-
-            # === Gradient diagnostics ===
-            if epoch == 0 and train_loss == 0.0:
-                with torch.no_grad():
-                    grad_norms = [g.abs().mean().item() for g in grads_scaled]
-                    print(f"grad mean norms (scaled): dU/dlon={grad_norms[0]:.3e}, "
-                          f"dU/dlat={grad_norms[1]:.3e}")
-
-            # Unscale gradients
-            g_lon, g_lat, _ = scaler.unscale_acceleration(grads_scaled)  # g_r unused
-            g_AD = torch.stack([g_lon, g_lat], dim=1)
-
-            loss_val = criterion_val(y_pred, scaler.scale_potential(y_b))
-            loss_grad = torch.mean((a_true_b + g_AD) ** 2)
-            loss = alpha * loss_val + beta * loss_grad
-
-            # Check for NaNs before backward
-            if torch.isnan(loss):
-                print("⚠️ NaN detected in loss. "
-                      f"Loss_val={loss_val.item():.3e}, "
-                      f"Loss_grad={loss_grad.item():.3e}")
-                break
-
-            loss.backward()
-            optimizer.step()
-
-            train_loss += loss.item()
-
-        avg_train_loss = train_loss / len(train_loader)
-
-        # === Validation ===
-        model.eval()
-        val_loss = 0.0
-
-        for lon_b, lat_b, r_b, y_b, a_true_b in val_loader:
-            lon_b, lat_b, r_b = lon_b.to(device), lat_b.to(device), r_b.to(device)
-            y_b, a_true_b = y_b.to(device), a_true_b.to(device)
-
-            lon_b.requires_grad_(True)
-            lat_b.requires_grad_(True)
-            r_b.requires_grad_(True)
-
-            # === Forward pass ===
-            y_pred, grads_scaled = model(lon_b, lat_b, r_b, return_gradients=True, physical_units=False)
-
-            # === Convert to physical gradients ===
-            g_lon, g_lat, _ = scaler.unscale_acceleration(grads_scaled)
-            g_AD = torch.stack([g_lon, g_lat], dim=1)
-
-            # === Loss computation ===
-            loss_val = criterion_val(y_pred, scaler.scale_potential(y_b))
-            loss_grad = torch.mean((a_true_b + g_AD) ** 2)
-
-            loss = alpha * loss_val + beta * loss_grad
-            val_loss += loss.item()
-
-        avg_val_loss = val_loss / len(val_loader)
-        train_losses.append(avg_train_loss)
-        val_losses.append(avg_val_loss)
-        epoch_time = time.time() - epoch_start
-
-        print(
-            f"Epoch [{epoch + 1}/{epochs}] - Train: {avg_train_loss:.6f} | Val: {avg_val_loss:.6f} | Time: {epoch_time:.1f}s")
-
-
-
-    outputs_dir = os.path.join(base_dir, "Outputs")
-    save_dir = os.path.join(outputs_dir, "Models")
-    os.makedirs(save_dir, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_path = os.path.join(save_dir, f"sh_siren_torch_lmax{lmax}_{timestamp}.pth")
-    np.save(os.path.join(save_dir, f"sh_siren_torch_lmax{lmax}_{timestamp}_train_losses.npy"), np.array(train_losses))
-    np.save(os.path.join(save_dir, f"sh_siren_torch_lmax{lmax}_{timestamp}_val_losses.npy"), np.array(val_losses))
-
+    model_path = os.path.join(run_dir, "model.pth")
     torch.save({
-        "state_dict": model.state_dict(),
+        "state_dict": module.model.state_dict(),
         "scaler": {
-            "r_scale": scaler.r_scale,
-            "U_min": scaler.U_min,
-            "U_max": scaler.U_max
-        },
-    }, save_path)
+            "U_mean": float(module.scaler.U_mean) if module.scaler.U_mean is not None else None,
+            "U_std": float(module.scaler.U_std) if module.scaler.U_std is not None else None,
+            "g_mean": module.scaler.g_mean.tolist() if module.scaler.g_mean is not None else None,
+            "g_std": module.scaler.g_std.tolist() if module.scaler.g_std is not None else None,
+        }
+    }, model_path)
 
     config = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "device": str(device),
+        "mode": mode,
+        "lr": lr,
+        "epochs": epochs,
+        "batch_size": batch_size,
         "lmax": lmax,
-        "hidden_features": hidden_features,
         "hidden_layers": hidden_layers,
-        "out_features": out_features,
+        "hidden_features": hidden_features,
         "first_omega_0": first_omega_0,
         "hidden_omega_0": hidden_omega_0,
-        "scaler": {
-            "r_scale": float(scaler.r_scale),
-            "U_min": float(scaler.U_min),
-            "U_max": float(scaler.U_max)
-        },
-        "training": {
-            "epochs": epochs,
-            "train_samples": len(train_df),
-            "val_samples": len(val_df),
-            "final_train_loss": float(train_losses[-1]),
-            "final_val_loss": float(val_losses[-1]),
-        },
-        "paths": {
-            "model_file": save_path,
-            "train_losses": os.path.join(save_dir, "train_losses.npy"),
-            "val_losses": os.path.join(save_dir, "val_losses.npy"),
-        }
+        "exclude_degrees": exclude_degrees,
+        "train_samples": len(train_df),
+        "val_samples": len(val_df)
     }
 
-    config_path = os.path.join(save_dir, f"sh_siren_torch_lmax{lmax}_{timestamp}_model_config.json")
+    config_path = os.path.join(run_dir, "config.json")
     with open(config_path, "w") as f:
-        json.dump(config, f, indent=4, default=lambda o: float(o) if hasattr(o, "item") else str(o))
+        json.dump(config, f, indent=4)
 
-    print(f"✅ Model configuration saved to: {config_path}")
+    print(f"\n✅ Model saved at: {model_path}")
+    print(f"📝 Config saved at: {config_path}")
 
+    test_script.main(run_path=run_dir)
+
+    data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_r0_test.parquet")
+
+    if trainer.is_global_zero:
+        print("Generating linear equivalent model...")
+        gen = LinearEquivalentGenerator(run_dir, data_path)
+    output_dir = run_dir
+    predictions_dir = run_dir
+
+    modes_with_potential = ["U", "U_g_direct",  "g_indirect", "U_g_indirect", "g_hybrid", "U_g_hybrid"]
+    modes_accel_only = ["g_direct"]
+
+    if mode in modes_with_potential:
+        print("🌀 Plotting potential and acceleration maps...")
+
+        plotter_potential = GravityDataPlotter(
+            data_path=data_path,
+            output_dir=output_dir,
+            predictions_dir=predictions_dir,
+            linear_dir=predictions_dir,
+            target_type="potential"
+        )
+        plotter_potential.plot_map()
+        plotter_potential.plot_scatter()
+
+        plotter_accel = GravityDataPlotter(
+            data_path=data_path,
+            output_dir=output_dir,
+            predictions_dir=predictions_dir,
+            linear_dir=predictions_dir,
+            target_type="acceleration"
+        )
+        plotter_accel.plot_map()
+        plotter_accel.plot_scatter()
+
+    elif mode in modes_accel_only:
+        print("⚡ Plotting acceleration maps...")
+
+        plotter_accel = GravityDataPlotter(
+            data_path=data_path,
+            output_dir=output_dir,
+            predictions_dir=predictions_dir,
+            linear_dir=predictions_dir,
+            target_type="acceleration"
+        )
+        plotter_accel.plot_map()
+        plotter_accel.plot_scatter()
+
+    else:
+        print(f"⚠️ Mode '{mode}' not recognized for plotting.")
 
 if __name__ == "__main__":
-    import multiprocessing
-
-    multiprocessing.freeze_support()
+    import multiprocessing as mp
+    mp.set_start_method("spawn", force=True)
     main()

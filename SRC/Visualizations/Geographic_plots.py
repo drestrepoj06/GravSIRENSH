@@ -9,56 +9,99 @@ import matplotlib.pyplot as plt
 from scipy.interpolate import griddata
 import cartopy.crs as ccrs
 import glob
-import re
 
 
 class GravityDataPlotter:
-    def __init__(self, data_path, output_dir=None, predictions_dir=None, target_type="acceleration"):
-        """
-        target_type: 'acceleration' or 'potential'
-        """
+    def __init__(
+        self,
+        data_path,
+        output_dir=None,
+        predictions_dir=None,
+        linear_dir=None,
+        linear_type="mag",
+        target_type="acceleration"
+    ):
         self.data_path = data_path
-        self.sample_df = pd.read_parquet(data_path)
-        self.filename = os.path.basename(data_path)
+        self.output_dir = output_dir
+        self.predictions_dir = predictions_dir
+        self.linear_dir = linear_dir
+        self.linear_type = linear_type
         self.target_type = target_type.lower()
 
-        if output_dir is None:
-            base_dir = os.path.abspath(os.path.join(os.path.dirname(data_path), '..', 'Outputs', 'Figures'))
+        self.sample_df = pd.read_parquet(data_path)
+        self.filename = os.path.basename(data_path)
+        if "lat" in self.sample_df.columns:
+            mask = np.abs(self.sample_df["lat"].values) < 89.9999
+            before = len(self.sample_df)
+            self.sample_df = self.sample_df[mask].reset_index(drop=True)
+            after = len(self.sample_df)
+            print(f"📌 GravityDataPlotter: Masked poles → {before} → {after} samples")
+
+        if self.output_dir is None:
+            base_dir = os.path.abspath(
+                os.path.join(os.path.dirname(data_path), "..", "Outputs", "Figures")
+            )
             os.makedirs(base_dir, exist_ok=True)
             self.output_dir = base_dir
         else:
-            os.makedirs(output_dir, exist_ok=True)
-            self.output_dir = output_dir
+            os.makedirs(self.output_dir, exist_ok=True)
 
-        self.predictions_dir = predictions_dir or os.path.abspath(
-            os.path.join(os.path.dirname(data_path), '..', 'Outputs', 'Predictions')
-        )
+        # Predictions_dir defaults to output_dir
+        if self.predictions_dir is None:
+            self.predictions_dir = self.output_dir
 
-        # Extract metadata
+        self.has_predictions = False
+        self.preds_path = self._find_predictions_file()
+        if self.preds_path:
+            self._load_predictions()
+
+        self.linear_available = False
+        if self.linear_dir is not None:
+            self._load_linear_predictions()
+
         self.lmax, self.lmax_base, self.n_samples, self.altitude, self.mode = self._parse_filename(self.filename)
 
-        # Detect available targets automatically if invalid
         if self.target_type not in ["acceleration", "potential"]:
             if "dg_total_mGal" in self.sample_df.columns:
                 self.target_type = "acceleration"
-            elif "dV_m2_s2" in self.sample_df.columns:
+            elif "dU_m2_s2" in self.sample_df.columns:
                 self.target_type = "potential"
             else:
                 raise ValueError("Cannot determine target type from dataset.")
 
-        # Check for matching predictions
+        # === Find and load predictions ===
         self.preds_path = self._find_predictions_file()
         self.has_predictions = False
         if self.preds_path:
             self._load_predictions()
-
-    # ----------------------- helpers -----------------------
 
     def _fname_suffix(self):
         """Suffix used in filenames: includes Lmax, base (if any), and ΔL."""
         if self.lmax_base is None:
             return f"L{self.lmax}"
         return f"L{self.lmax}-{self.lmax_base}"
+
+    def _load_linear_predictions(self):
+        """Loads linear model outputs from .npy files inside the run directory."""
+        component = "mag" if self.target_type == "acceleration" else "U"
+
+        fname = f"linear_g_{component}.npy" if component != "U" else "linear_U.npy"
+        path = os.path.join(self.linear_dir, fname)
+
+        if not os.path.exists(path):
+            print(f"⚠️ Linear model prediction file not found: {path}")
+            return
+
+        linear_vals = np.load(path)
+
+        if len(linear_vals) != len(self.sample_df):
+            print("⚠️ Linear prediction length mismatch — cannot align with test set.")
+            print(f"   Linear: {len(linear_vals)}, Data: {len(self.sample_df)}")
+            return
+
+        self.sample_df["linear_pred"] = linear_vals
+        self.linear_available = True
+        print(f"✅ Loaded linear predictions ({component}) from {path}")
 
     def _parse_filename(self, filename):
         name = filename.replace(".parquet", "")
@@ -77,27 +120,39 @@ class GravityDataPlotter:
         return lmax_full, lmax_base, n_samples, altitude, mode
 
     def _generate_title(self):
-        symbol = "Δg" if self.target_type == "acceleration" else "ΔV"
+        symbol = "Δg" if self.target_type == "acceleration" else "ΔU"
+        title = f"EGM2008 {symbol} (Lmax={self.lmax})"
         if self.lmax_base is not None:
-            return f"EGM2008 {symbol} (Lmax={self.lmax}, base={self.lmax_base})"
-        else:
-            return f"EGM2008 {symbol} (Lmax={self.lmax})"
+            title += f", base={self.lmax_base}"
+        if self.has_predictions:
+            title += " — Predicted vs True"
+        return title
 
     def _find_predictions_file(self):
-        pattern = os.path.join(self.predictions_dir, f"*_preds*.npy")
+        """
+        Finds the appropriate prediction file inside the run folder.
+        Matches based on target type:
+          - Potential → *_U.npy
+          - Acceleration → *_mag.npy
+        """
+        if self.target_type == "potential":
+            pattern = os.path.join(self.predictions_dir, "test_results*_U.npy")
+        else:
+            pattern = os.path.join(self.predictions_dir, "test_results*_mag.npy")
+
         matches = glob.glob(pattern)
         if matches:
             latest = max(matches, key=os.path.getmtime)
-            print(f"📂 Found predictions file: {os.path.basename(latest)}")
+            print(f"Found predictions file for '{self.target_type}': {os.path.basename(latest)}")
             return latest
         else:
-            print("⚠️ No predictions file found for this dataset.")
+            print(f"No predictions file found for target '{self.target_type}' in {self.predictions_dir}")
             return None
 
     def _load_predictions(self):
         preds = np.load(self.preds_path)
         if len(preds) != len(self.sample_df):
-            print("⚠️ Prediction file length does not match test data.")
+            print("⚠️ Prediction file length does not match test data. Skipping plot.")
             return
 
         if self.target_type == "acceleration":
@@ -105,8 +160,8 @@ class GravityDataPlotter:
             pred_col = "predicted_dg_total_mGal"
             unit = "mGal"
         else:
-            true_col = "dV_m2_s2"
-            pred_col = "predicted_dV_m2_s2"
+            true_col = "dU_m2_s2"
+            pred_col = "predicted_dU_m2_s2"
             unit = "m²/s²"
 
         self.sample_df[pred_col] = preds
@@ -126,7 +181,6 @@ class GravityDataPlotter:
             grid[mask] = griddata(points, values, (Lon[mask], Lat[mask]), method="nearest")
         return Lon, Lat, grid
 
-    # ----------------------- plots -----------------------
 
     def plot_map(self, cmap="viridis"):
         """Interpolated global map of the selected field."""
@@ -134,7 +188,7 @@ class GravityDataPlotter:
             value_col = "dg_total_mGal"
             unit = "mGal"
         else:
-            value_col = "dV_m2_s2"
+            value_col = "dU_m2_s2"
             unit = "m²/s²"
 
         Lon, Lat, grid_total = self._make_grid(value_col)
@@ -157,7 +211,7 @@ class GravityDataPlotter:
         output_filename = f"Map_{suffix}.png"
         output_path = os.path.join(self.output_dir, output_filename)
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        print(f"✅ Figure saved: {output_path}")
+        print(f"Figure saved: {output_path}")
         plt.close()
 
     def plot_density(self, axis="lat"):
@@ -189,8 +243,9 @@ class GravityDataPlotter:
         suffix = f"{self._fname_suffix()}_{self.mode}"
         output_path = os.path.join(self.output_dir, f"Density_{axis}_{suffix}.png")
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        print(f"✅ Density figure saved: {output_path}")
+        print(f"Density figure saved: {output_path}")
         plt.close()
+
 
     def plot_scatter(self, color_by=None, s=0.5, alpha=0.8, cmap="viridis"):
         """Scatter plot of samples OR predicted vs true + predicted-only map + histogram."""
@@ -200,12 +255,11 @@ class GravityDataPlotter:
             unit = "mGal"
             symbol = "Δg"
         else:
-            true_col = "dV_m2_s2"
-            pred_col = "predicted_dV_m2_s2"
+            true_col = "dU_m2_s2"
+            pred_col = "predicted_dU_m2_s2"
             unit = "m²/s²"
-            symbol = "ΔV"
+            symbol = "ΔU"
 
-        # Case 1: No predictions
         if not self.has_predictions:
             plt.figure(figsize=(10, 5))
             color_data = self.sample_df[color_by] if color_by in self.sample_df.columns else self.sample_df[true_col]
@@ -218,19 +272,12 @@ class GravityDataPlotter:
             suffix = f"{self._fname_suffix()}_{self.mode}_{self.target_type[:3]}"
             output_path = os.path.join(self.output_dir, f"Scatter_{suffix}.png")
             plt.savefig(output_path, dpi=300, bbox_inches="tight")
-            print(f"✅ Scatter figure saved: {output_path}")
+            print(f"Scatter figure saved: {output_path}")
             plt.close()
             return
 
-        # Case 2: Predictions available — (a) side-by-side comparison
         cols = [true_col, pred_col]
         titles = [f"True {symbol}", f"Predicted {symbol}"]
-
-        preds_name = os.path.basename(self.preds_path)
-        match_lmax = re.search(r"lmax(\d+)", preds_name)
-        match_time = re.search(r"(\d{8}_\d{6})", preds_name)
-        model_lmax = match_lmax.group(1) if match_lmax else "unknown"
-        timestamp = match_time.group(1) if match_time else "unknown"
 
         fig, axes = plt.subplots(1, 2, figsize=(12, 5),
                                  subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)})
@@ -252,13 +299,12 @@ class GravityDataPlotter:
             cbar.set_label(unit)
             ax.set_title(title, fontsize=11, pad=10)
 
-        comp_suffix = f"{self._fname_suffix()}_modelL{model_lmax}_{timestamp}_{self.target_type}"
+        comp_suffix = f"{self._fname_suffix()}_{self.target_type}"
         output_path = os.path.join(self.output_dir, f"Scatter_Comparison_{comp_suffix}.png")
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        print(f"✅ Scatter comparison figure saved: {output_path}")
+        print(f"Scatter comparison figure saved: {output_path}")
         plt.close()
 
-        # (b) predictions-only map
         plt.figure(figsize=(10, 5))
         ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180))
         sc = ax.scatter(self.sample_df["lon"], self.sample_df["lat"],
@@ -272,30 +318,98 @@ class GravityDataPlotter:
         gl.left_labels = True
         cbar = plt.colorbar(sc, orientation="horizontal", pad=0.04, aspect=40)
         cbar.set_label(unit)
-        ax.set_title(f"Predicted {symbol} (Model L{model_lmax}, Data L{self.lmax}, {self.mode})", fontsize=11, pad=10)
+        ax.set_title(f"Predicted {symbol} (Data L{self.lmax}, {self.mode})", fontsize=11, pad=10)
 
-        pred_only_suffix = f"{self._fname_suffix()}_modelL{model_lmax}_{timestamp}_{self.target_type}"
+        pred_only_suffix = f"{self._fname_suffix()}_{self.target_type}"
         output_path_pred = os.path.join(self.output_dir, f"Scatter_Predicted_{pred_only_suffix}.png")
         plt.savefig(output_path_pred, dpi=300, bbox_inches="tight")
-        print(f"✅ Separate predictions figure saved: {output_path_pred}")
+        print(f"Separate predictions figure saved: {output_path_pred}")
         plt.close()
 
-        # (c) histogram of predictions
         plt.figure(figsize=(8, 5))
         plt.hist(self.sample_df[pred_col], bins=100, color="steelblue", edgecolor="black", alpha=0.8)
         plt.xlabel(f"Predicted {symbol} ({unit})")
         plt.ylabel("Frequency")
-        plt.title(f"Histogram of Predicted {symbol}\n(Model L{model_lmax}, Data L{self.lmax}, {self.mode})", fontsize=11)
+        plt.title(f"Histogram of Predicted {symbol}\n(Data L{self.lmax}, {self.mode})", fontsize=11)
         plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
         plt.tight_layout()
 
-        hist_suffix = f"{self._fname_suffix()}_modelL{model_lmax}_{timestamp}_{self.target_type}"
+        hist_suffix = f"{self._fname_suffix()}_{self.target_type}"
         output_path_hist = os.path.join(self.output_dir, f"Histogram_Predicted_{hist_suffix}.png")
         plt.savefig(output_path_hist, dpi=300, bbox_inches="tight")
-        print(f"✅ Histogram of predictions saved: {output_path_hist}")
+        print(f"Histogram of predictions saved: {output_path_hist}")
         plt.close()
 
-    # ----------------------- factory -----------------------
+        if self.linear_available:
+            plt.figure(figsize=(12, 5))
+            ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180))
+
+            sc = ax.scatter(
+                self.sample_df["lon"],
+                self.sample_df["lat"],
+                c=self.sample_df["linear_pred"],
+                s=s, alpha=alpha, cmap=cmap,
+                transform=ccrs.PlateCarree()
+            )
+
+            ax.set_global()
+            gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
+            gl.top_labels = False
+            gl.right_labels = False
+            gl.bottom_labels = True
+            gl.left_labels = True
+
+            cbar = plt.colorbar(sc, orientation="horizontal", pad=0.04, aspect=40)
+            cbar.set_label(unit)
+            ax.set_title(f"Linear Model Prediction ({symbol})", fontsize=11, pad=10)
+
+            fname_linear = os.path.join(
+                self.output_dir,
+                f"Scatter_Linear_{self._fname_suffix()}_{self.target_type}.png"
+            )
+            plt.savefig(fname_linear, dpi=300, bbox_inches="tight")
+            print(f"Linear-only scatter saved: {fname_linear}")
+            plt.close()
+
+            fig, axes = plt.subplots(
+                1, 2, figsize=(14, 5),
+                subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)}
+            )
+
+            cols = [true_col, "linear_pred"]
+            titles = ["Ground Truth", "Linear Model"]
+
+            vmin_lin = self.sample_df[cols].min().min()
+            vmax_lin = self.sample_df[cols].max().max()
+
+            for ax, col, title in zip(axes, cols, titles):
+                sc = ax.scatter(
+                    self.sample_df["lon"],
+                    self.sample_df["lat"],
+                    c=self.sample_df[col],
+                    s=s, alpha=alpha, cmap=cmap,
+                    transform=ccrs.PlateCarree(),
+                    vmin=vmin_lin, vmax=vmax_lin
+                )
+
+                ax.set_global()
+                gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
+                gl.top_labels = False
+                gl.right_labels = False
+                gl.bottom_labels = True
+                gl.left_labels = True
+
+                cbar = plt.colorbar(sc, ax=ax, orientation="horizontal", pad=0.04)
+                cbar.set_label(unit)
+                ax.set_title(title, fontsize=11, pad=10)
+
+            fname_compare = os.path.join(
+                self.output_dir,
+                f"Scatter_True_vs_Linear_{self._fname_suffix()}_{self.target_type}.png"
+            )
+            plt.savefig(fname_compare, dpi=300, bbox_inches="tight")
+            print(f"True-vs-linear scatter comparison saved: {fname_compare}")
+            plt.close()
 
     @classmethod
     def from_latest(cls, data_dir, output_dir=None, target_type="acceleration"):
@@ -310,39 +424,10 @@ class GravityDataPlotter:
 
         latest_train = train_files[0]
         latest_test = test_files[0]
-        print(f"📂 Found latest train file: {os.path.basename(latest_train)}")
-        print(f"📂 Found latest test file:  {os.path.basename(latest_test)}")
+        print(f"Found latest train file: {os.path.basename(latest_train)}")
+        print(f"Found latest test file:  {os.path.basename(latest_test)}")
 
         train_plotter = cls(latest_train, output_dir, target_type=target_type)
         train_plotter.has_predictions = False
         test_plotter = cls(latest_test, output_dir, target_type=target_type)
         return train_plotter, test_plotter
-
-
-def main():
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    data_dir = os.path.join(base_dir, 'Data')
-    output_dir = os.path.join(base_dir, 'Outputs', 'Figures')
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Choose target type here: 'acceleration' or 'potential'
-    target_type = "acceleration"
-
-    train_plotter, test_plotter = GravityDataPlotter.from_latest(data_dir, output_dir, target_type=target_type)
-
-    # Example plots
-    train_plotter.plot_map()
-    train_plotter.plot_density("lat")
-    train_plotter.plot_density("lon")
-    train_plotter.plot_scatter(s=0.3, alpha=0.6)
-
-    test_plotter.plot_map()
-    test_plotter.plot_density("lat")
-    test_plotter.plot_density("lon")
-    test_plotter.plot_scatter(s=0.3, alpha=0.6)
-
-    print("\n✅ All plots saved in:", output_dir)
-
-
-if __name__ == "__main__":
-    main()

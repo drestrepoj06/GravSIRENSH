@@ -2,167 +2,295 @@
 jhonr"""
 import os
 import sys
+import json
+import time
 import torch
 import numpy as np
 import pandas as pd
-import json
-from sklearn.metrics import mean_squared_error
+from datetime import datetime
+import multiprocessing as mp
 
-# Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from SRC.Location_encoder.SH_siren import SH_SIREN, SHSirenScaler
 
 
-def main():
-    # === Paths and configuration ===
+def main(run_path=None):
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    outputs_dir = os.path.join(base_dir, "Outputs", "Models")
+    runs_dir = os.path.join(base_dir, "Outputs", "Runs")
+    data_dir = os.path.join(base_dir, "Data")
+    mse_consistency = None
 
-    # External test dataset (new distribution)
-    test_data_path = os.path.join(base_dir, "Data", "Samples_10-2_50_r0_test.parquet")
+    # === Load test dataset ===
+    test_path = os.path.join(data_dir, "Samples_2190-2_250k_r0_test.parquet")
+    test_df = pd.read_parquet(test_path)
 
-    # === Find latest trained model/config ===
-    model_files = [f for f in os.listdir(outputs_dir) if f.endswith(".pth")]
-    if not model_files:
-        raise FileNotFoundError("❌ No trained model (.pth) found in Outputs/Models.")
-    latest_model = max(model_files, key=lambda f: os.path.getmtime(os.path.join(outputs_dir, f)))
-    model_path = os.path.join(outputs_dir, latest_model)
+    mask = np.abs(test_df["lat"].values) < 89.9999
+    test_df = test_df[mask].reset_index(drop=True)
 
-    config_files = [f for f in os.listdir(outputs_dir) if f.endswith("_model_config.json")]
-    latest_config = max(config_files, key=lambda f: os.path.getmtime(os.path.join(outputs_dir, f)))
-    config_path = os.path.join(outputs_dir, latest_config)
+    print(f"📈 Loaded {len(test_df):,} test samples")
 
-    print(f"📂 Model file:  {latest_model}")
-    print(f"📂 Config file: {latest_config}")
+    # === Find the latest run ===
+    if run_path is not None:
+        latest_run = run_path
+    else:
+        run_dirs = [os.path.join(runs_dir, d) for d in os.listdir(runs_dir)
+                    if os.path.isdir(os.path.join(runs_dir, d))]
+        if not run_dirs:
+            raise FileNotFoundError("❌ No run directories found in Outputs/Runs")
+        latest_run = max(run_dirs, key=os.path.getmtime)
+    print(f"📂 Using latest run: {os.path.basename(latest_run)}")
 
+    model_path = os.path.join(latest_run, "model.pth")
+    config_path = os.path.join(latest_run, "config.json")
+
+    if not os.path.exists(model_path) or not os.path.exists(config_path):
+        raise FileNotFoundError("❌ Missing model.pth or config.json in run folder")
+
+    # === Load config and checkpoint ===
     with open(config_path, "r") as f:
         config = json.load(f)
+    checkpoint = torch.load(model_path, map_location="cpu")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    mode = config["mode"]
+    print(f"🧩 Loaded config: mode={mode}, lmax={config['lmax']}")
 
-    # === Load model and scaler ===
-    checkpoint = torch.load(model_path, map_location=device)
+    scaler_data = checkpoint["scaler"]
+    scaler = SHSirenScaler(mode=mode)
+    scaler.U_mean = scaler_data.get("U_mean")
+    scaler.U_std = scaler_data.get("U_std")
 
-    scaler = SHSirenScaler()
-    scaler.U_min = checkpoint["scaler"]["U_min"]
-    scaler.U_max = checkpoint["scaler"]["U_max"]
+    g_mean = scaler_data.get("g_mean")
+    g_std = scaler_data.get("g_std")
 
+    if g_mean is not None:
+        scaler.g_mean = torch.tensor(g_mean, dtype=torch.float32, device=device)
+    if g_std is not None:
+        scaler.g_std = torch.tensor(g_std, dtype=torch.float32, device=device)
+
+    # === Initialize model ===
     model = SH_SIREN(
         lmax=config["lmax"],
         hidden_features=config["hidden_features"],
         hidden_layers=config["hidden_layers"],
-        out_features=config["out_features"],
         first_omega_0=config["first_omega_0"],
         hidden_omega_0=config["hidden_omega_0"],
         device=device,
-        scaler=scaler
+        scaler=scaler,
+        exclude_degrees=config.get("exclude_degrees"),
+        mode=mode,
     )
     model.load_state_dict(checkpoint["state_dict"])
     model.to(device)
     model.eval()
+    print("✅ Model and scaler loaded successfully.")
 
-    print(f"✅ Model and scaler loaded successfully on {device}.")
+    # === Prepare test inputs ===
+    lon = torch.tensor(test_df["lon"].values, dtype=torch.float32, device=device)
+    lat = torch.tensor(test_df["lat"].values, dtype=torch.float32, device=device)
 
-    # === Load and scale new test data ===
-    test_df = pd.read_parquet(test_data_path)
-    print(f"📈 Loaded {len(test_df):,} test samples from external dataset")
-
-    # Scale potential using the *training* scaler limits (do NOT refit)
-    test_df["dV_m2_s2_scaled"] = scaler.scale_potential(test_df["dV_m2_s2"].values)
-
-    # Scale spatial coordinates
-    lon_t = torch.tensor(test_df["lon"].values, dtype=torch.float32)
-    lat_t = torch.tensor(test_df["lat"].values, dtype=torch.float32)
-    r_t = torch.tensor(test_df["radius_m"].values, dtype=torch.float32)
-
-    lon = lon_t.to(device)
-    lat = lat_t.to(device)
-    r = r_t.to(device)
-
-    # --- model grads in scaled space (per DEG for lon/lat) ---
-    U_phys, grads_phys = model(lon, lat, r, return_gradients=True, physical_units=True)
-
-    # grads_phys = (dU/dlon, dU/dlat, dU/dr) but dU/dr≈0 now
-    a_theta = -grads_phys[0]
-    a_phi = -grads_phys[1]
-
-    # 6) Convert to mGal and magnitude
-    a_theta_mGal = a_theta.detach().cpu().numpy().ravel() * 1e5
-    a_phi_mGal = a_phi.detach().cpu().numpy().ravel() * 1e5
-    g_mag = torch.sqrt(a_theta ** 2 + a_phi ** 2)
-    a_mag_mGal = g_mag.detach().cpu().numpy().ravel() * 1e5
-    U_pred = U_phys.detach().cpu().numpy().ravel()
-
-    true_u = test_df["dV_m2_s2"].values
+    true_U = test_df["dU_m2_s2"].values
     true_theta = test_df["dg_theta_mGal"].values
     true_phi = test_df["dg_phi_mGal"].values
     true_mag = test_df["dg_total_mGal"].values
 
-    # === Compute statistics ===
-    true_stats = {
-        "true_U_min": float(true_u.min()), "true_U_max": float(true_u.max()),
-        "true_U_mean": float(true_u.mean()), "true_U_std": float(true_u.std()),
-        "true_a_theta_min": float(true_theta.min()), "true_a_theta_max": float(true_theta.max()),
-        "true_a_theta_mean": float(true_theta.mean()), "true_a_theta_std": float(true_theta.std()),
-        "true_a_phi_min": float(true_phi.min()), "true_a_phi_max": float(true_phi.max()),
-        "true_a_phi_mean": float(true_phi.mean()), "true_a_phi_std": float(true_phi.std()),
-        "true_a_mag_min": float(true_mag.min()), "true_a_mag_max": float(true_mag.max()),
-        "true_a_mag_mean": float(true_mag.mean()), "true_a_mag_std": float(true_mag.std()),
-    }
+    print("⚙️ Running model inference...")
+
+    start = time.time()
+
+    def to_np(t):
+        """Detach and convert tensor to NumPy."""
+        return t.detach().cpu().numpy()
+
+    if mode == "U":
+        # Predict potential and optionally gradients
+        U_scaled, grads_phys = model(lon, lat, return_gradients=True)
+        U_pred = scaler.unscale_potential(U_scaled).detach()
+        dU_dlon, dU_dlat = grads_phys[:2]
+        g_theta = (-dU_dlat * 1e5).detach()
+        g_phi = (-dU_dlon * 1e5).detach()
+        g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
+
+        mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
+        mse_g = np.mean((to_np(g_mag) - true_mag) ** 2)
+
+    elif mode == "g_direct":
+        preds = model(lon, lat)
+        g_pred = (scaler.unscale_gravity(preds)).detach()
+        g_theta = g_pred[:, 0]
+        g_phi = g_pred[:, 1]
+        g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
+
+        mse_U = None
+        mse_g = np.mean((to_np(g_theta) - true_theta) ** 2) + np.mean(
+            (to_np(g_phi) - true_phi) ** 2
+        )
+
+    elif mode == "g_indirect":
+        U_pred, (g_theta, g_phi) = model(lon, lat)
+        U_pred = scaler.unscale_potential(U_pred).detach()
+        g_theta = g_theta.detach()
+        g_phi = g_phi.detach()
+        g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
+
+        mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
+        mse_g = np.mean((to_np(g_theta) - true_theta) ** 2) + np.mean(
+            (to_np(g_phi) - true_phi) ** 2
+        )
+
+    elif mode == "g_hybrid":
+        out = model(lon, lat)  # out is a dict
+        U_pred_scaled = out["U_pred"]  # (N,1)
+
+        g_pred_scaled = out["g_pred"]  # (N,2)
+
+        g_from_gradU_scaled = out["g_from_gradU"]  # (N,2)
+        U_pred = scaler.unscale_potential(U_pred_scaled).detach()  # (N,1)
+        g_pred = scaler.unscale_gravity(g_pred_scaled).detach()  # (N,2)
+        g_from_gradU = scaler.unscale_gravity(g_from_gradU_scaled).detach()  # (N,2)
+        g_theta_cons = g_from_gradU[:, 0]
+        g_phi_cons = g_from_gradU[:, 1]
+        g_theta = g_pred[:, 0]
+        g_phi = g_pred[:, 1]
+        g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
+
+        mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
+        mse_g = (
+                np.mean((to_np(g_theta) - true_theta) ** 2) +
+                np.mean((to_np(g_phi) - true_phi) ** 2)
+        )
+        mse_consistency = (
+                np.mean((to_np(g_theta_cons) - to_np(g_theta)) ** 2) +
+                np.mean((to_np(g_phi_cons) - to_np(g_phi)) ** 2)
+        )
+
+    elif mode == "U_g_direct":
+        U_pred, g_pred = model(lon, lat)
+        U_pred = scaler.unscale_potential(U_pred).detach()
+        g_pred = (scaler.unscale_gravity(g_pred)).detach()
+        g_theta = g_pred[:, 0]
+        g_phi = g_pred[:, 1]
+        g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
+
+        mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
+        mse_g = np.mean((to_np(g_theta) - true_theta) ** 2) + np.mean(
+            (to_np(g_phi) - true_phi) ** 2
+        )
+
+    elif mode == "U_g_indirect":
+        U_pred, (g_theta, g_phi) = model(lon, lat)
+        U_pred = scaler.unscale_potential(U_pred).detach()
+        g_theta = g_theta.detach()
+        g_phi = g_phi.detach()
+        g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
+
+        mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
+        mse_g = np.mean((to_np(g_theta) - true_theta) ** 2) + np.mean(
+            (to_np(g_phi) - true_phi) ** 2
+        )
+
+    elif mode == "U_g_hybrid":
+        U_pred_scaled, g_pred_scaled, (gtheta_fromU_scaled, gphi_fromU_scaled) = model(lon, lat)
+        U_pred = scaler.unscale_potential(U_pred_scaled).detach()  # (N,1)
+        g_pred = scaler.unscale_gravity(g_pred_scaled).detach()  # (N,2)
+        g_theta = g_pred[:, 0]
+        g_phi = g_pred[:, 1]
+        g_from_gradU = scaler.unscale_gravity(
+            torch.stack([gtheta_fromU_scaled, gphi_fromU_scaled], dim=1)
+        ).detach()
+        g_theta_cons = g_from_gradU[:, 0]
+        g_phi_cons = g_from_gradU[:, 1]
+
+        g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
+
+        mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
+
+        mse_g = (
+                np.mean((to_np(g_theta) - true_theta) ** 2) +
+                np.mean((to_np(g_phi) - true_phi) ** 2)
+        )
+        mse_consistency = (
+                np.mean((to_np(g_theta_cons) - to_np(g_theta)) ** 2) +
+                np.mean((to_np(g_phi_cons) - to_np(g_phi)) ** 2)
+        )
+    else:
+        raise ValueError(f"Unsupported mode '{mode}'")
+    torch.cuda.synchronize() if device.type == "cuda" else None
+    print(f"⏱️ Inference done in {time.time() - start:.1f}s")
+
+    # === Convert to NumPy ===
+    if mse_U is not None:
+        U_pred_np = U_pred.detach().cpu().numpy().ravel()
+    else:
+        U_pred_np = None
+    g_theta_np = g_theta.detach().cpu().numpy()
+    g_phi_np = g_phi.detach().cpu().numpy()
+    g_mag_np = g_mag.detach().cpu().numpy()
+
+    # === Compute summary statistics ===
+    print("📊 Test metrics:")
+    if mse_U is not None:
+        print(f"   MSE(U) = {mse_U:.3e}")
+    print(f"   MSE(g) = {mse_g:.3e}")
+
+    # === Save predictions inside the same run folder ===
+    prefix = os.path.join(latest_run, "test_results")
+
+    if U_pred_np is not None:
+        np.save(f"{prefix}_U.npy", U_pred_np)
+    np.save(f"{prefix}_g_theta.npy", g_theta_np)
+    np.save(f"{prefix}_g_phi.npy", g_phi_np)
+    np.save(f"{prefix}_g_mag.npy", g_mag_np)
+    print(f"💾 Predictions saved in {latest_run}")
+
+    # === Metadata summary ===
+    def stats(arr):
+        return {
+            "min": float(np.min(arr)),
+            "max": float(np.max(arr)),
+            "mean": float(np.mean(arr)),
+            "std": float(np.std(arr)),
+        }
 
     pred_stats = {
-        "pred_U_min": float(U_pred.min()), "pred_U_max": float(U_pred.max()),
-        "pred_U_mean": float(U_pred.mean()), "pred_U_std": float(U_pred.std()),
-        "pred_a_theta_min": float(a_theta_mGal.min()), "pred_a_theta_max": float(a_theta_mGal.max()),
-        "pred_a_theta_mean": float(a_theta_mGal.mean()), "pred_a_theta_std": float(a_theta_mGal.std()),
-        "pred_a_phi_min": float(a_phi_mGal.min()), "pred_a_phi_max": float(a_phi_mGal.max()),
-        "pred_a_phi_mean": float(a_phi_mGal.mean()), "pred_a_phi_std": float(a_phi_mGal.std()),
-        "pred_a_mag_min": float(a_mag_mGal.min()), "pred_a_mag_max": float(a_mag_mGal.max()),
-        "pred_a_mag_mean": float(a_mag_mGal.mean()), "pred_a_mag_std": float(a_mag_mGal.std()),
+        "g_theta": stats(g_theta_np),
+        "g_phi": stats(g_phi_np),
+        "g_mag": stats(g_mag_np),
+    }
+    if U_pred_np is not None:
+        pred_stats["U"] = stats(U_pred_np)
+
+    true_stats = {
+        "g_theta": stats(test_df["dg_theta_mGal"].to_numpy()),
+        "g_phi": stats(test_df["dg_phi_mGal"].to_numpy()),
+        "g_mag": stats(test_df["dg_total_mGal"].to_numpy()),
     }
 
-    # === Compute MSE per component ===
-    mse_u= mean_squared_error(true_u, U_pred)
-    mse_theta = mean_squared_error(true_theta, a_theta_mGal)
-    mse_phi = mean_squared_error(true_phi, a_phi_mGal)
-    mse_mag = mean_squared_error(true_mag, a_mag_mGal)
-    print(f"📊 MSE_U: {mse_u:.6e}")
-    print(f"📊 MSE_theta: {mse_theta:.6e}")
-    print(f"📊 MSE_phi:   {mse_phi:.6e}")
-    print(f"📊 MSE_mag:   {mse_mag:.6e}")
-
-    # === Save acceleration magnitude predictions ===
-    preds_dir = os.path.join(base_dir, "Outputs", "Predictions")
-    os.makedirs(preds_dir, exist_ok=True)
-
-    model_name = os.path.splitext(os.path.basename(model_path))[0]
-    output_file = os.path.join(preds_dir, f"{model_name}_preds.npy".replace(",", ""))
-
-    np.save(output_file, a_mag_mGal)
-    print(f"💾 Acceleration magnitude predictions saved to {output_file}")
-
-    # === Save metadata ===
+    if "dU_m2_s2" in test_df.columns:
+        true_stats["U"] = stats(test_df["dU_m2_s2"].to_numpy())
+    # === Metadata summary ===
     meta = {
-        "model_file": os.path.basename(model_path),
-        "config_file": os.path.basename(config_path),
-        "device": str(device),
-        "lmax": config["lmax"],
-        "hidden_layers": config.get("hidden_layers", None),
+        "mode": mode,
         "samples": len(test_df),
-        "mse_u_m2/s22": float(mse_u),
-        "mse_theta_mgal2": float(mse_theta),
-        "mse_phi_mgal2": float(mse_phi),
-        "mse_mag_mgal2": float(mse_mag),
-        **true_stats,
-        **pred_stats
+        "mse_U": float(mse_U) if mse_U is not None else None,
+        "mse_g": float(mse_g),
+        "mse_consistency": float(mse_consistency) if mse_consistency is not None else None,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "stats": {
+            "pred": pred_stats,
+            "true": true_stats
+        }
     }
 
-    report_path = output_file.replace(".npy", "_test_report.json")
-    with open(report_path, "w") as f:
+    meta_file = f"{prefix}_report.json"
+    with open(meta_file, "w") as f:
         json.dump(meta, f, indent=4)
+
+    print(f"🧩 Metadata saved to {meta_file}")
+    print("✅ Done.")
+    return model, test_df
 
 
 if __name__ == "__main__":
-    import multiprocessing
-    multiprocessing.freeze_support()
+    mp.freeze_support()
     main()

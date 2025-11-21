@@ -56,18 +56,34 @@ def SH(m, l, phi, theta):
 # And adding a new radius input, apart from the lat and lon coordinates
 class SphericalHarmonics(nn.Module):
 
-    def __init__(self, lmax: int = 10, device: str = "cuda", r_ref: float = 6378136.3):
+    def __init__(self, lmax: int = 10, exclude_degrees: int = 0,
+                 device: str = "cuda", r_ref: float = 6378136.3):
         super().__init__()
         self.lmax = lmax
+        self.exclude_degrees = exclude_degrees
         self.device = device
         self.r_ref = r_ref
-        self.embedding_dim = (lmax + 1) ** 2
 
-        # precompute degree indices for each harmonic term
+        # Build degree list for ALL harmonics (full basis)
         deg_list = []
         for l in range(lmax + 1):
             deg_list.extend([l] * (2 * l + 1))
-        self.register_buffer("deg_idx", torch.tensor(deg_list, dtype=torch.float32))
+
+        deg_list = torch.tensor(deg_list, dtype=torch.float32)
+
+        if exclude_degrees is None:
+            mask = torch.ones_like(deg_list, dtype=torch.bool)
+        else:
+            mask = deg_list > exclude_degrees
+
+        # Store mask and filtered degree indices
+        self.register_buffer("deg_idx_full", deg_list)
+        self.register_buffer("mask", mask)
+        self.register_buffer("deg_idx", deg_list[mask])
+
+        # Final embedding dimension AFTER removal
+        self.embedding_dim = int(mask.sum().item())
+        print(f"🔹 Effective embedding size: {self.embedding_dim}")
 
     def forward(self, lonlatr: torch.Tensor) -> torch.Tensor:
         if lonlatr.shape[1] == 2:
@@ -76,27 +92,22 @@ class SphericalHarmonics(nn.Module):
         else:
             lon, lat, r = lonlatr[:, 0], lonlatr[:, 1], lonlatr[:, 2]
 
-        phi = torch.deg2rad(lon + 180.0)   # 0–360° longitude
-        theta = torch.deg2rad(90.0 - lat)  # 0–180° colatitude
-        theta = torch.clamp(theta, 1e-7, math.pi - 1e-7) 
+        phi = torch.deg2rad(lon + 180.0)
+        theta = torch.deg2rad(90.0 - lat)
+        theta = torch.clamp(theta, 1e-7, math.pi - 1e-7)
 
-        # Angular harmonics
-        Y = []
+        # Build FULL spherical harmonics
+        Y_full = []
         for l in range(self.lmax + 1):
             for m in range(-l, l + 1):
-                y = SH(m, l, phi, theta)
-                Y.append(y)
-        Y = torch.stack(Y, dim=-1).to(self.device)
+                Y_full.append(SH(m, l, phi, theta))
+        Y_full = torch.stack(Y_full, dim=-1)  # (N, full_dim)
 
-        # Radial dependence (r_ref / r)^l
+        # Filter out low degrees
+        Y = Y_full[:, self.mask]
+
+        # Apply radial factor only for remaining degrees
         radial_factor = (self.r_ref / r).unsqueeze(1) ** self.deg_idx
         Y = Y * radial_factor
 
         return Y
-
-    def from_dataframe(self, df, lon_col="lon", lat_col="lat", r_col="radius_m"):
-        lon = torch.tensor(df[lon_col].values, dtype=torch.float32, device=self.device)
-        lat = torch.tensor(df[lat_col].values, dtype=torch.float32, device=self.device)
-        r   = torch.tensor(df[r_col].values, dtype=torch.float32, device=self.device)
-        lonlatr = torch.stack([lon, lat, r], dim=-1)
-        return self.forward(lonlatr)
