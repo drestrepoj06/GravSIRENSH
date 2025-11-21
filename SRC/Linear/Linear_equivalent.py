@@ -34,7 +34,7 @@ class LinearEquivalentGenerator:
 
         # Internal paths
         self.config_path = os.path.join(run_dir, "config.json")
-        self.linear_output_path = os.path.join(run_dir, "linear_results.parquet")
+        self.linear_output_path = None
 
         # Load config
         with open(self.config_path, "r") as f:
@@ -45,15 +45,12 @@ class LinearEquivalentGenerator:
         self.clm_g = None
         self.L_equiv = None
 
-        # Automatically run entire pipeline
+        # Step 1 — run the original linear grid generator (UNCHANGED)
         self.df_grid = self.generate_linear_equiv()
-        (
-            self.g_r_lin,
-            self.g_theta_lin,
-            self.g_phi_lin,
-            self.g_mag_lin,
-            self.mask
-        ) = self.evaluate_on_test(save=True)
+
+        # Step 3 — now evaluate on test points
+        self.g_r_lin, self.g_theta_lin, self.g_phi_lin, \
+            self.g_mag_lin, self.mask = self.evaluate_on_test(save=True)
 
     @staticmethod
     def compute_siren_params(config):
@@ -68,7 +65,7 @@ class LinearEquivalentGenerator:
             output_dim = 1
         elif mode == "g_direct":
             output_dim = 2
-        elif mode in ["U_g_direct", "U_g_indirect"]:
+        elif mode in ["U_g_direct", "U_g_indirect", "g_hybrid", "U_g_hybrid"]:
             output_dim = 3
         else:
             raise ValueError(f"Unknown mode '{mode}'")
@@ -84,60 +81,81 @@ class LinearEquivalentGenerator:
     def params_to_lmax(params):
         return max(0, int(np.round(np.sqrt(params) - 1)))
 
+    def _scale_clm(self, clm, scale):
+        scaled = clm.copy()
+        scaled.coeffs *= scale[np.newaxis, :, np.newaxis]
+        return scaled
+
     def generate_linear_equiv(self):
         params = self.compute_siren_params(self.config)
         L_equiv = self.params_to_lmax(params)
         self.L_equiv = L_equiv
+        self.linear_output_path = os.path.join(
+            self.run_dir,
+            f"linear_{self.L_equiv}-2.parquet"
+        )
+        self.clm_full_g = None
+        self.clm_low_g = None
 
         print(f"🔢 NN parameters: {params:,}")
         print(f"🎯 Equivalent SH degree: {L_equiv}")
 
         clm_full = pysh.datasets.Earth.EGM2008(lmax=L_equiv)
+        clm_low = pysh.datasets.Earth.EGM2008(lmax=2) # Removed manually degree 2 since the data doesn't have it
 
-        # Copy and zero degrees 0, 1, 2
-        clm_res = clm_full.copy()
-        clm_res.coeffs[:, :3, :] = 0.0  # l = 0, 1, 2  → exactly zero
+        self.r0 = clm_full.r0
+        r1 = self.r0 + self.altitude
 
-        r0 = clm_res.r0
-        r1 = r0 + self.altitude
-        degrees = np.arange(L_equiv + 1)
+        deg_full = np.arange(self.L_equiv + 1)
+        deg_low = np.arange(2 + 1)
 
-        scale_U = (r0 / r1) ** degrees
-        scale_g = (r0 / r1) ** (degrees + 2)
+        scale_U_full = (self.r0 / r1) ** deg_full
+        scale_U_low = (self.r0 / r1) ** deg_low
+        scale_g_full = (self.r0 / r1) ** (deg_full + 2)
+        scale_g_low = (self.r0 / r1) ** (deg_low + 2)
 
-        clm_U = clm_res.copy()
-        clm_g = clm_res.copy()
+        clm_full_U = self._scale_clm(clm_full, scale_U_full)
+        clm_low_U = self._scale_clm(clm_low, scale_U_low)
+        self.clm_full_g = self._scale_clm(clm_full, scale_g_full)
+        self.clm_low_g = self._scale_clm(clm_low, scale_g_low)
 
-        clm_U.coeffs *= scale_U[np.newaxis, :, np.newaxis]
-        clm_g.coeffs *= scale_g[np.newaxis, :, np.newaxis]
+        res_full = self.clm_full_g.expand(lmax=self.L_equiv)
+        res_low = self.clm_low_g.expand(lmax=self.L_equiv)
 
-        self.clm_U = clm_U
-        self.clm_g = clm_g
+        res_full_U = clm_full_U.expand(lmax=self.L_equiv)
+        res_low_U = clm_low_U.expand(lmax=self.L_equiv)
 
-        # Make grid for inspection
-        grid_U = clm_U.expand(lmax=L_equiv)
-        grid_g = clm_g.expand(lmax=L_equiv)
+        pot_full = res_full_U.pot.data
+        pot_low = res_low_U.pot.data
+        dU = pot_full - pot_low
 
-        lats = grid_U.pot.lats()
-        lons = grid_U.pot.lons()
+        gr_full = res_full.rad.data * 1e5
+        gr_low = res_low.rad.data * 1e5
+        gtheta_full = res_full.theta.data * 1e5
+        gtheta_low = res_low.theta.data * 1e5
+        gphi_full = res_full.phi.data * 1e5
+        gphi_low = res_low.phi.data * 1e5
+
+        dg_r = gr_full - gr_low
+        dg_theta = gtheta_full - gtheta_low
+        dg_phi = gphi_full - gphi_low
+        dg_total = np.sqrt(
+            dg_theta ** 2 + dg_phi ** 2)  # +dg_r**2) the radial component will be added when changing altitude
+
+        lats = res_full.pot.lats()
+        lons = res_full.pot.lons()
         lat_grid = np.repeat(lats, len(lons))
         lon_grid = np.tile(lons, len(lats))
 
-        dU = grid_U.pot.data
-        dg_r = grid_g.rad.data * 1e5
-        dg_theta = grid_g.theta.data * 1e5
-        dg_phi = grid_g.phi.data * 1e5
-        dg_total = np.sqrt(dg_theta**2 + dg_phi**2)
-
         df = pd.DataFrame({
-            "lat": lat_grid,
-            "lon": lon_grid,
-            "dU_m2_s2": dU.ravel(),
-            "dg_r_mGal": dg_r.ravel(),
-            "dg_theta_mGal": dg_theta.ravel(),
-            "dg_phi_mGal": dg_phi.ravel(),
-            "dg_total_mGal": dg_total.ravel(),
-            "radius_m": np.full(dU.size, r0),
+            "lat": lat_grid.astype("float32"),
+            "lon": lon_grid.astype("float32"),
+            "dU_m2_s2": dU.ravel().astype("float32"),
+            "dg_r_mGal": dg_r.ravel().astype("float32"),
+            "dg_theta_mGal": dg_theta.ravel().astype("float32"),
+            "dg_phi_mGal": dg_phi.ravel().astype("float32"),
+            "dg_total_mGal": dg_total.ravel().astype("float32"),
+            "radius_m": np.full(dU.size, self.r0, dtype="float32")
         })
 
         df.to_parquet(self.linear_output_path, index=False)
@@ -145,17 +163,19 @@ class LinearEquivalentGenerator:
 
         return df
 
-
     def evaluate_on_test(self, save=True):
         df_test = pd.read_parquet(self.data_path)
         lat = df_test["lat"].values
         lon = df_test["lon"].values
+
         mask = np.abs(lat) < 89.9999
         lat_f = lat[mask]
         lon_f = lon[mask]
-        r_f = np.full_like(lat_f, self.clm_g.r0, dtype=float)
 
-        g = self.clm_g.expand(
+        r_f = np.full_like(lat_f, self.r0)
+
+        # FULL model
+        g_full = self.clm_full_g.expand(
             lat=lat_f.reshape(-1, 1),
             lon=lon_f.reshape(-1, 1),
             r=r_f.reshape(-1, 1),
@@ -163,42 +183,28 @@ class LinearEquivalentGenerator:
             degrees=True,
         )
 
-        g_r = g[:, 0]*1e5
-        g_theta = g[:, 1]*1e5
-        g_phi = g[:, 2]*1e5
-        g_mag = np.sqrt(g_theta**2 + g_phi**2)
+        # LOW-degree model (degree 0–2)
+        g_low = self.clm_low_g.expand(
+            lat=lat_f.reshape(-1, 1),
+            lon=lon_f.reshape(-1, 1),
+            r=r_f.reshape(-1, 1),
+            lmax=2,
+            degrees=True,
+        )
+
+        # RESIDUAL field
+        g = g_full - g_low
+
+        g_r = g[:, 0] * 1e5
+        g_theta = g[:, 1] * 1e5
+        g_phi = g[:, 2] * 1e5
+        g_mag = np.sqrt(g_theta ** 2 + g_phi ** 2)
+
         if save:
-            np.save(os.path.join(self.run_dir, "linear_g_r.npy"), g_r)
-            np.save(os.path.join(self.run_dir, "linear_g_theta.npy"), g_theta)
-            np.save(os.path.join(self.run_dir, "linear_g_phi.npy"), g_phi)
-            np.save(os.path.join(self.run_dir, "linear_g_mag.npy"), g_mag)
-            print(f"📁 Saved linear gravity components in {self.run_dir}")
+            np.save(f"{self.run_dir}/linear_g_r.npy", g_r)
+            np.save(f"{self.run_dir}/linear_g_theta.npy", g_theta)
+            np.save(f"{self.run_dir}/linear_g_phi.npy", g_phi)
+            np.save(f"{self.run_dir}/linear_g_mag.npy", g_mag)
 
         return g_r, g_theta, g_phi, g_mag, mask
 
-
-data_path = os.path.join(base_dir, "Data", "Samples_248-2_240k_r0_train.parquet")
-run_dir = os.path.join(base_dir, "Outputs", "Runs", "sh_siren_LR=0.005_mode=g_indirect_BS=262144_lmax=10_layers=2_neurons=8_first_omega=20_hidden_omega=1.0_exclude_degrees=None")
-
-# Where to save linear equivalent file
-# LinearEquivalentGenerator(run_dir, data_path)
-
-plotter_potential = GravityDataPlotter(
-    data_path=data_path,
-    output_dir=run_dir,
-    predictions_dir=None,
-    linear_dir=None,
-    target_type="potential"
-)
-plotter_potential.plot_map()
-plotter_potential.plot_scatter()
-
-plotter_accel = GravityDataPlotter(
-    data_path=data_path,
-    output_dir=run_dir,
-    predictions_dir=None,
-    linear_dir=None,
-    target_type="acceleration"
-)
-plotter_accel.plot_map()
-plotter_accel.plot_scatter()

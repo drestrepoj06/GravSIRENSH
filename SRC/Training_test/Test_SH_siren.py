@@ -16,6 +16,7 @@ def main(run_path=None):
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
     runs_dir = os.path.join(base_dir, "Outputs", "Runs")
     data_dir = os.path.join(base_dir, "Data")
+    mse_consistency = None
 
     # === Load test dataset ===
     test_path = os.path.join(data_dir, "Samples_2190-2_250k_r0_test.parquet")
