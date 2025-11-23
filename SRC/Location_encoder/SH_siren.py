@@ -38,7 +38,7 @@ class SHSirenScaler:
             self.U_mean = float(U.mean())
             self.U_std  = float(U.std())
 
-        if self.mode in ["g_direct", "U_g_direct", "g_hybrid", "U_g_hybrid", "U_g_indirect"]:
+        if self.mode in ["g_direct", "g_indirect", "U_g_direct", "g_hybrid", "U_g_hybrid", "U_g_indirect"]:
             g_cols = ["dg_theta_mGal", "dg_phi_mGal"]
             g_vals = df[g_cols].to_numpy()
             self.g_mean = g_vals.mean(axis=0)   # shape (2,)
