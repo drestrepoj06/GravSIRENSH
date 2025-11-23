@@ -378,19 +378,19 @@ class Gravity(pl.LightningModule):
         if self.mode == "U":
             loss = self.criterion(y_pred.view(-1), y_true.view(-1))
             loss = loss.mean()
-            return (loss, None, loss) if return_components else loss
+            return (loss, None, None, loss) if return_components else loss
 
         elif self.mode == "g_direct":
             loss = self.criterion(y_pred.view(-1), y_true.view(-1))
             loss = loss.mean()
-            return (None, loss, loss) if return_components else loss
+            return (None, loss, None, loss) if return_components else loss
 
         elif self.mode == "g_indirect":
             U_pred, (g_theta, g_phi) = y_pred
             g_pred = torch.stack([g_theta, g_phi], dim=1)
             loss = self.criterion(g_pred.view(-1), y_true.view(-1))
             loss = loss.mean()
-            return (None, loss, loss) if return_components else loss
+            return (None, loss, None, loss) if return_components else loss
 
         elif self.mode == "g_hybrid":
             U_pred = y_pred["U_pred"]  # (N,1)
@@ -416,7 +416,7 @@ class Gravity(pl.LightningModule):
                    + torch.log(sigma_g * sigma_consist)
 
             if return_components:
-                return (loss_g, loss_consistency, loss)
+                return (None, loss_g, loss_consistency, loss)
 
             return loss
 
@@ -451,7 +451,7 @@ class Gravity(pl.LightningModule):
 
             loss = (loss_U / (2 * sigma_U ** 2)) + (loss_g / (2 * sigma_g ** 2))
             loss += torch.log(sigma_U * sigma_g)
-            return (loss_U, loss_g, loss) if return_components else loss
+            return (loss_U, loss_g, None, loss) if return_components else loss
 
         elif self.mode == "U_g_hybrid":
 

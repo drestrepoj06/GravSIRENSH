@@ -222,15 +222,14 @@ def main():
     print(f"\n✅ Model saved at: {model_path}")
     print(f"📝 Config saved at: {config_path}")
 
-    test_script.main(run_path=run_dir)
-
     data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_r0_test.parquet")
-
     if trainer.is_global_zero:
         print("Generating linear equivalent model...")
         gen = LinearEquivalentGenerator(run_dir, data_path)
     output_dir = run_dir
     predictions_dir = run_dir
+
+    test_script.main(run_path=run_dir)
 
     modes_with_potential = ["U", "U_g_direct",  "g_indirect", "U_g_indirect", "g_hybrid", "U_g_hybrid"]
     modes_accel_only = ["g_direct"]

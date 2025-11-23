@@ -92,7 +92,7 @@ def main(run_path=None):
     true_U = test_df["dU_m2_s2"].values
     true_theta = test_df["dg_theta_mGal"].values
     true_phi = test_df["dg_phi_mGal"].values
-    true_mag = np.sqrt(true_theta**2 + true_phi**2)
+    true_mag = test_df["dg_total_mGal"].values
 
     print("⚙️ Running model inference...")
 
@@ -277,6 +277,19 @@ def main(run_path=None):
 
     if "dU_m2_s2" in test_df.columns:
         true_stats["U"] = stats(test_df["dU_m2_s2"].to_numpy())
+
+    linear_mag_path = os.path.join(run_path, "linear_g_mag.npy")
+
+    mse_linear = None
+    linear_stats = None
+
+    if os.path.exists(linear_mag_path):
+        # Load linear_g_mag
+        linear_mag_np = np.load(linear_mag_path)
+
+        # Compute stats
+        linear_stats = stats(linear_mag_np)
+        mse_linear = float(np.mean((linear_mag_np - true_mag) ** 2))
     # === Metadata summary ===
     meta = {
         "mode": mode,
@@ -284,10 +297,17 @@ def main(run_path=None):
         "mse_U": float(mse_U) if mse_U is not None else None,
         "mse_g": float(mse_g),
         "mse_consistency": float(mse_consistency) if mse_consistency is not None else None,
+
+        # New field:
+        "mse_linear": mse_linear,
+
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "stats": {
             "pred": pred_stats,
-            "true": true_stats
+            "true": true_stats,
+
+            # New field:
+            "linear_mag": linear_stats
         }
     }
 
