@@ -147,7 +147,7 @@ def main(run_path=None):
         lon = lon.clone().detach().requires_grad_(True)
         lat = lat.clone().detach().requires_grad_(True)
 
-        U_scaled, grads_phys = model(lon, lat, return_gradients=True)  # model.forward returns scaled outputs!
+        U_scaled, _ = model(lon, lat)  # model.forward returns scaled outputs!
         U_pred = scaler.unscale_potential(U_scaled).detach()
 
         grads = torch.autograd.grad(
