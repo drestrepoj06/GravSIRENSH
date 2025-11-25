@@ -203,7 +203,7 @@ class GravityDataPlotter:
         gl.left_labels = True
 
         im = ax.pcolormesh(Lon, Lat, grid_total, cmap=cmap, shading="auto", transform=ccrs.PlateCarree())
-        cbar = plt.colorbar(im, ax=ax, orientation="horizontal", pad=0.04, aspect=50)
+        cbar = plt.colorbar(im, ax=ax, orientation="horizontal", pad=0.08, aspect=50)
         cbar.set_label(unit)
         ax.set_title(self._generate_title(), fontsize=13, pad=12)
 
@@ -295,7 +295,7 @@ class GravityDataPlotter:
             gl.right_labels = False
             gl.bottom_labels = True
             gl.left_labels = True
-            cbar = plt.colorbar(sc, ax=ax, orientation="horizontal", pad=0.04, aspect=40)
+            cbar = plt.colorbar(sc, ax=ax, orientation="horizontal", pad=0.08, aspect=40)
             cbar.set_label(unit)
             ax.set_title(title, fontsize=11, pad=10)
 
@@ -316,7 +316,7 @@ class GravityDataPlotter:
         gl.right_labels = False
         gl.bottom_labels = True
         gl.left_labels = True
-        cbar = plt.colorbar(sc, orientation="horizontal", pad=0.04, aspect=40)
+        cbar = plt.colorbar(sc, orientation="horizontal", pad=0.08, aspect=40)
         cbar.set_label(unit)
         ax.set_title(f"Predicted {symbol} (Data L{self.lmax}, {self.mode})", fontsize=11, pad=10)
 
@@ -359,7 +359,7 @@ class GravityDataPlotter:
             gl.bottom_labels = True
             gl.left_labels = True
 
-            cbar = plt.colorbar(sc, orientation="horizontal", pad=0.04, aspect=40)
+            cbar = plt.colorbar(sc, orientation="horizontal", pad=0.08, aspect=40)
             cbar.set_label(unit)
             ax.set_title(f"Linear Model Prediction ({symbol})", fontsize=11, pad=10)
 
@@ -399,7 +399,7 @@ class GravityDataPlotter:
                 gl.bottom_labels = True
                 gl.left_labels = True
 
-                cbar = plt.colorbar(sc, ax=ax, orientation="horizontal", pad=0.04)
+                cbar = plt.colorbar(sc, ax=ax, orientation="horizontal", pad=0.08)
                 cbar.set_label(unit)
                 ax.set_title(title, fontsize=11, pad=10)
 

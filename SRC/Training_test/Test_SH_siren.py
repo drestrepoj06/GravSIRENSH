@@ -127,16 +127,35 @@ def main(run_path=None):
         )
 
     elif mode == "g_indirect":
-        U_pred, (g_theta, g_phi) = model(lon, lat)
-        U_pred = scaler.unscale_potential(U_pred).detach()
+        # Recompute U_pred with autograd
+        lon = lon.clone().detach().requires_grad_(True)
+        lat = lat.clone().detach().requires_grad_(True)
+
+        U_scaled = model.model(lon, lat)  # model.forward returns scaled outputs!
+        U_pred = scaler.unscale_potential(U_scaled)
+
+        grads = torch.autograd.grad(
+            outputs=U_scaled,
+            inputs=[lon, lat],
+            grad_outputs=torch.ones_like(U_scaled),
+            create_graph=False,
+            retain_graph=False,
+            only_inputs=True
+        )
+
+        # Convert gradients to physical accelerations
+        grads_phys = scaler.unscale_acceleration_from_potential(grads, lat=lat, r=r)
+        g_theta = -grads_phys[1] * 1e5
+        g_phi = -grads_phys[0] * 1e5
+
         g_theta = g_theta.detach()
         g_phi = g_phi.detach()
+
         g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
 
         mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
-        mse_g = np.mean((to_np(g_theta) - true_theta) ** 2) + np.mean(
-            (to_np(g_phi) - true_phi) ** 2
-        )
+        mse_g = np.mean((to_np(g_theta) - true_theta) ** 2) + \
+                np.mean((to_np(g_phi) - true_phi) ** 2)
 
     elif mode == "g_hybrid":
         out = model(lon, lat)  # out is a dict
