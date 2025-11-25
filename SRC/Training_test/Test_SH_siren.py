@@ -104,15 +104,31 @@ def main(run_path=None):
 
     if mode == "U":
         # Predict potential and optionally gradients
-        U_scaled, grads_phys = model(lon, lat, return_gradients=True)
+        U_scaled, grads = model(lon, lat, return_gradients=True)
         U_pred = scaler.unscale_potential(U_scaled).detach()
-        dU_dlon, dU_dlat, _ = grads_phys
-        g_theta = (-dU_dlat * 1e5).detach()
-        g_phi = (-dU_dlon * 1e5).detach()
+
+        grads = torch.autograd.grad(
+            outputs=U_scaled,
+            inputs=[lon, lat],
+            grad_outputs=torch.ones_like(U_scaled),
+            create_graph=False,
+            retain_graph=False,
+            only_inputs=True
+        )
+
+        # Convert gradients to physical accelerations
+        grads_phys = scaler.unscale_acceleration_from_potential(grads, lat=lat, r=None)
+        g_theta = -grads_phys[1] * 1e5
+        g_phi = -grads_phys[0] * 1e5
+
+        g_theta = g_theta.detach()
+        g_phi = g_phi.detach()
+
         g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
 
         mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
-        mse_g = np.mean((to_np(g_mag) - true_mag) ** 2)
+        mse_g = np.mean((to_np(g_theta) - true_theta) ** 2) + \
+                np.mean((to_np(g_phi) - true_phi) ** 2)
 
     elif mode == "g_direct":
         preds = model(lon, lat)
@@ -131,8 +147,8 @@ def main(run_path=None):
         lon = lon.clone().detach().requires_grad_(True)
         lat = lat.clone().detach().requires_grad_(True)
 
-        U_scaled = model.model(lon, lat)  # model.forward returns scaled outputs!
-        U_pred = scaler.unscale_potential(U_scaled)
+        U_scaled, grads_phys = model(lon, lat, return_gradients=True)  # model.forward returns scaled outputs!
+        U_pred = scaler.unscale_potential(U_scaled).detach()
 
         grads = torch.autograd.grad(
             outputs=U_scaled,
@@ -144,7 +160,7 @@ def main(run_path=None):
         )
 
         # Convert gradients to physical accelerations
-        grads_phys = scaler.unscale_acceleration_from_potential(grads, lat=lat, r=r)
+        grads_phys = scaler.unscale_acceleration_from_potential(grads, lat=lat, r=None)
         g_theta = -grads_phys[1] * 1e5
         g_phi = -grads_phys[0] * 1e5
 

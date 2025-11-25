@@ -185,7 +185,7 @@ class SH_SIREN(nn.Module):
             hidden_omega_0=hidden_omega_0,
         )
 
-    def forward(self, lon, lat, return_gradients=False, r=None, create_graph=False):
+    def forward(self, lon, lat, return_gradients=False, r=None):
         """
         Forward pass supporting all 5 experimental configurations.
         """
@@ -206,10 +206,7 @@ class SH_SIREN(nn.Module):
                         retain_graph=self.training,
                         only_inputs=True
                     )
-                    grads_phys = self.scaler.unscale_acceleration_from_potential(
-                        grads, lat=lat, r=r
-                    )
-                    return outputs, grads_phys
+                    return outputs, grads
             else:
                 Y = self.embedding(lon, lat).to(self.device)
                 outputs = self.siren(Y)
