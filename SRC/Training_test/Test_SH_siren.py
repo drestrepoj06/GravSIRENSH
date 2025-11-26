@@ -227,11 +227,7 @@ def main(run_path=None):
         U_scaled, (dU_dlat, dU_dlon) = model(lon, lat, return_gradients=True)
         U_pred = scaler.unscale_potential(U_scaled).detach()
 
-        g_theta, g_phi = scaler.unscale_acceleration_from_potential(
-            (dU_dlon, dU_dlat),
-            lat=lat,
-            r=None
-        )
+        g_theta, g_phi = scaler.unscale_gravity((dU_dlon, dU_dlat))
         g_theta = (-g_theta * 1e5).detach()
         g_phi = (-g_phi * 1e5).detach()
         g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
