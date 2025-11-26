@@ -36,6 +36,9 @@ class GravityDataset(torch.utils.data.Dataset):
         if mode == "U":
             U_phys = df["dU_m2_s2"].values
             U_scaled = self.scaler.scale_potential(U_phys)
+            cols = ["dg_theta_mGal", "dg_phi_mGal"]
+            g_phys = df[cols].values
+            g_scaled = self.scaler.scale_gravity(g_phys)
             self.y = torch.tensor(U_scaled, dtype=torch.float32).unsqueeze(1)
 
         elif mode in ["g_direct"]:
@@ -74,21 +77,21 @@ class GravityDataset(torch.utils.data.Dataset):
             self.y = torch.tensor(y, dtype=torch.float32)
 
         # --- U + g (indirect multitask) ---
-        elif mode == "U_g_indirect":
-            U_phys = df["dU_m2_s2"].values
-            g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
-            U_scaled = self.scaler.scale_potential(U_phys)
-            g_scaled = self.scaler.scale_gravity(g_phys)
-            y = np.column_stack([U_scaled, g_scaled])
-            self.y = torch.tensor(y, dtype=torch.float32)
+        # elif mode == "U_g_indirect":
+        #     U_phys = df["dU_m2_s2"].values
+        #     g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
+        #     U_scaled = self.scaler.scale_potential(U_phys)
+        #     g_scaled = self.scaler.scale_gravity(g_phys)
+        #     y = np.column_stack([U_scaled, g_scaled])
+        #     self.y = torch.tensor(y, dtype=torch.float32)
 
-        elif mode == "U_g_hybrid":
-            U_phys = df["dU_m2_s2"].values
-            g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
-            U_scaled = self.scaler.scale_potential(U_phys)
-            g_scaled = self.scaler.scale_gravity(g_phys)
-            y = np.column_stack([U_scaled, g_scaled])
-            self.y = torch.tensor(y, dtype=torch.float32)
+        # elif mode == "U_g_hybrid":
+        #     U_phys = df["dU_m2_s2"].values
+        #     g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
+        #     U_scaled = self.scaler.scale_potential(U_phys)
+        #     g_scaled = self.scaler.scale_gravity(g_phys)
+        #     y = np.column_stack([U_scaled, g_scaled])
+        #     self.y = torch.tensor(y, dtype=torch.float32)
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
@@ -132,7 +135,7 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "g_indirect"
+    mode = "U"
     lr = 5e-3
     batch_size = 262144
     lmax = 5
@@ -233,47 +236,34 @@ def main():
 
     test_script.main(run_path=run_dir)
 
-    modes_with_potential = ["U", "U_g_direct",  "g_indirect", "U_g_indirect", "g_hybrid", "U_g_hybrid"]
-    modes_accel_only = ["g_direct"]
+    PLOTS_BY_MODE = {
+        "U": ["potential", "acceleration"],
+        "U_g_direct": ["potential", "acceleration"],
+        "g_indirect": ["potential", "acceleration"],
+        "g_direct": ["acceleration"],
+        "g_hybrid": ["potential", "acceleration", "gradients"],
+        #"U_g_indirect": ["potential", "acceleration"],
+        #"U_g_hybrid": ["potential", "acceleration", "gradients"],
+    }
 
-    if mode in modes_with_potential:
-        print("🌀 Plotting potential and acceleration maps...")
+    targets_to_plot = PLOTS_BY_MODE.get(mode, None)
 
-        plotter_potential = GravityDataPlotter(
-            data_path=data_path,
-            output_dir=output_dir,
-            predictions_dir=predictions_dir,
-            linear_dir=predictions_dir,
-            target_type="potential"
-        )
-        plotter_potential.plot_map()
-        plotter_potential.plot_scatter()
-
-        plotter_accel = GravityDataPlotter(
-            data_path=data_path,
-            output_dir=output_dir,
-            predictions_dir=predictions_dir,
-            linear_dir=predictions_dir,
-            target_type="acceleration"
-        )
-        plotter_accel.plot_map()
-        plotter_accel.plot_scatter()
-
-    elif mode in modes_accel_only:
-        print("⚡ Plotting acceleration maps...")
-
-        plotter_accel = GravityDataPlotter(
-            data_path=data_path,
-            output_dir=output_dir,
-            predictions_dir=predictions_dir,
-            linear_dir=predictions_dir,
-            target_type="acceleration"
-        )
-        plotter_accel.plot_map()
-        plotter_accel.plot_scatter()
-
-    else:
+    if targets_to_plot is None:
         print(f"⚠️ Mode '{mode}' not recognized for plotting.")
+    else:
+        for target in targets_to_plot:
+            print(f"📡 Plotting {target} maps...")
+
+            plotter = GravityDataPlotter(
+                data_path=data_path,
+                output_dir=output_dir,
+                predictions_dir=predictions_dir,
+                linear_dir=predictions_dir,
+                target_type=target
+            )
+
+            plotter.plot_map()
+            plotter.plot_scatter()
 
 if __name__ == "__main__":
     import multiprocessing as mp

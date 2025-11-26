@@ -49,29 +49,3 @@ class SIRENNet(nn.Module):
 
     def forward(self, x):
         return self.net(x)
-
-class LINEAR(nn.Module):
-    """
-    Linear network that mimics the standard spherical harmonic expansion:
-        U(r, θ, φ) = Σ W_lm * Y_lm(θ, φ) * (r_ref / r)^l
-    It acts as a linear combination of precomputed spherical harmonic embeddings.
-    """
-
-    def __init__(self, in_features, out_features=1, bias=True):
-        super().__init__()
-        self.linear = nn.Linear(in_features, out_features, bias=bias)
-        self.init_weights()
-
-    def init_weights(self):
-        # Small uniform initialization, analogous to least-squares start
-        bound = 1.0 / math.sqrt(self.linear.in_features)
-        nn.init.uniform_(self.linear.weight, -bound, bound)
-        if self.linear.bias is not None:
-            nn.init.zeros_(self.linear.bias)
-
-    def forward(self, x):
-        """
-        x: tensor of shape [batch_size, in_features]
-           where in_features = number of SH coefficients (e.g., (lmax+1)^2)
-        """
-        return self.linear(x)

@@ -35,7 +35,6 @@ class GravityDataPlotter:
             before = len(self.sample_df)
             self.sample_df = self.sample_df[mask].reset_index(drop=True)
             after = len(self.sample_df)
-            print(f"📌 GravityDataPlotter: Masked poles → {before} → {after} samples")
 
         if self.output_dir is None:
             base_dir = os.path.abspath(
@@ -61,15 +60,6 @@ class GravityDataPlotter:
 
         self.lmax, self.lmax_base, self.n_samples, self.altitude, self.mode = self._parse_filename(self.filename)
 
-        if self.target_type not in ["acceleration", "potential"]:
-            if "dg_total_mGal" in self.sample_df.columns:
-                self.target_type = "acceleration"
-            elif "dU_m2_s2" in self.sample_df.columns:
-                self.target_type = "potential"
-            else:
-                raise ValueError("Cannot determine target type from dataset.")
-
-        # === Find and load predictions ===
         self.preds_path = self._find_predictions_file()
         self.has_predictions = False
         if self.preds_path:
@@ -129,43 +119,63 @@ class GravityDataPlotter:
         return title
 
     def _find_predictions_file(self):
-        """
-        Finds the appropriate prediction file inside the run folder.
-        Matches based on target type:
-          - Potential → *_U.npy
-          - Acceleration → *_mag.npy
-        """
-        if self.target_type == "potential":
-            pattern = os.path.join(self.predictions_dir, "test_results*_U.npy")
-        else:
-            pattern = os.path.join(self.predictions_dir, "test_results*_mag.npy")
+        patterns = {
+            "potential": "test_results*_U.npy",
+            "acceleration": "test_results*_mag.npy",
+            "gradients": "test_results*_g_mag_grad.npy",
+        }
 
+        if self.target_type not in patterns:
+            raise ValueError(f"Unknown target_type: {self.target_type}")
+
+        pattern = os.path.join(self.predictions_dir, patterns[self.target_type])
         matches = glob.glob(pattern)
+
         if matches:
             latest = max(matches, key=os.path.getmtime)
             print(f"Found predictions file for '{self.target_type}': {os.path.basename(latest)}")
             return latest
-        else:
-            print(f"No predictions file found for target '{self.target_type}' in {self.predictions_dir}")
-            return None
+
+        print(f"No predictions file found for target '{self.target_type}' in {self.predictions_dir}")
+        return None
 
     def _load_predictions(self):
         preds = np.load(self.preds_path)
+
         if len(preds) != len(self.sample_df):
             print("⚠️ Prediction file length does not match test data. Skipping plot.")
             return
 
+        # ACCELERATION (scalar)
         if self.target_type == "acceleration":
             true_col = "dg_total_mGal"
             pred_col = "predicted_dg_total_mGal"
-            unit = "mGal"
-        else:
+
+            self.sample_df[pred_col] = preds
+            self.sample_df["error_mGal"] = preds - self.sample_df[true_col]
+
+        # POTENTIAL (scalar)
+        elif self.target_type == "potential":
             true_col = "dU_m2_s2"
             pred_col = "predicted_dU_m2_s2"
-            unit = "m²/s²"
 
-        self.sample_df[pred_col] = preds
-        self.sample_df[f"error_{unit}"] = preds - self.sample_df[true_col]
+            self.sample_df[pred_col] = preds
+            self.sample_df["error_m2s2"] = preds - self.sample_df[true_col]
+
+        # GRADIENTS (scalar magnitude only)
+        elif self.target_type == "gradients":
+            true_col = "dg_total_mGal"
+            pred_col = "predicted_g_mag_mGal"
+
+            # preds is shape (N,) — just the magnitude
+            self.sample_df[pred_col] = preds
+            self.sample_df["error_mGal"] = preds - self.sample_df[true_col]
+
+            print("ℹ️ Loaded gradient-magnitude predictions (|g|). Compared with dg_total_mGal.")
+
+        else:
+            raise ValueError(f"Unknown target_type '{self.target_type}'")
+
         self.has_predictions = True
         print(f"✅ Loaded {len(preds):,} predictions for target '{self.target_type}'.")
 
@@ -214,39 +224,6 @@ class GravityDataPlotter:
         print(f"Figure saved: {output_path}")
         plt.close()
 
-    def plot_density(self, axis="lat"):
-        """Plots sampling density along latitude or longitude."""
-        if self.mode == "preds":
-            return  # skip for predictions
-
-        if axis == "lat":
-            bins = np.linspace(-90, 90, 181)
-            counts, edges = np.histogram(self.sample_df["lat"], bins=bins)
-            label = "Latitude (°)"
-            color = "teal"
-        elif axis == "lon":
-            bins = np.linspace(0, 360, 361)
-            counts, edges = np.histogram(self.sample_df["lon"], bins=bins)
-            label = "Longitude (°)"
-            color = "darkorange"
-        else:
-            raise ValueError("axis must be 'lat' or 'lon'")
-
-        centers = 0.5 * (edges[:-1] + edges[1:])
-        plt.figure(figsize=(8, 4))
-        plt.bar(centers, counts, width=np.diff(edges), color=color, edgecolor="black", alpha=0.7)
-        plt.xlabel(label)
-        plt.ylabel("Number of samples")
-        plt.title(f"Sampling Density along {label}")
-        plt.tight_layout()
-
-        suffix = f"{self._fname_suffix()}_{self.mode}"
-        output_path = os.path.join(self.output_dir, f"Density_{axis}_{suffix}.png")
-        plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        print(f"Density figure saved: {output_path}")
-        plt.close()
-
-
     def plot_scatter(self, color_by=None, s=0.5, alpha=0.8, cmap="viridis"):
         """Scatter plot of samples OR predicted vs true + predicted-only map + histogram."""
         if self.target_type == "acceleration":
@@ -254,7 +231,15 @@ class GravityDataPlotter:
             pred_col = "predicted_dg_total_mGal"
             unit = "mGal"
             symbol = "Δg"
-        else:
+
+        elif self.target_type == "gradients":
+            # Default: use g_magnitude
+            true_col = "dg_total_mGal"
+            pred_col = "predicted_g_mag_mGal"
+            unit = "mGal"
+            symbol = "Δg"
+
+        else:  # potential
             true_col = "dU_m2_s2"
             pred_col = "predicted_dU_m2_s2"
             unit = "m²/s²"
