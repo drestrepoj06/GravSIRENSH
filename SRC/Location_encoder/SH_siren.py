@@ -232,27 +232,24 @@ class SH_SIREN(nn.Module):
                         outputs=outputs,
                         inputs=[lon, lat],
                         grad_outputs=torch.ones_like(outputs),
-                        create_graph=self.training,  # True in train, False in val
+                        create_graph=self.training,
                         retain_graph=self.training,
                         only_inputs=True
                     )
-                    g_theta = grads[1]
-                    g_phi = grads[0]
+                    g_theta = -grads[1]
+                    g_phi = -grads[0]
 
                     return outputs, (g_theta, g_phi)
             else:
-                # Inference / pure U-only usage
                 Y = self.embedding(lon, lat).to(self.device)
                 outputs = self.siren(Y)
                 return outputs
 
         elif self.mode == "g_hybrid":
-            # compute ∇U_pred using autograd
             with torch.set_grad_enabled(True):
                 lon = lon.to(self.device).requires_grad_(True)
                 lat = lat.to(self.device).requires_grad_(True)
 
-                # recompute U_pred with grad-enabled coords
                 Y = self.embedding(lon, lat).to(self.device)
                 outputs = self.siren(Y)
                 U_pred = outputs[:, 0:1]
@@ -267,12 +264,8 @@ class SH_SIREN(nn.Module):
                     only_inputs=True,
                     allow_unused=True
                 )
-
-                grads_phys = self.scaler.unscale_acceleration_from_potential(
-                    grads, lat=lat, r=r
-                )
-                g_theta_from_U = -grads_phys[1] * 1e5
-                g_phi_from_U = -grads_phys[0] * 1e5
+                g_theta_from_U = -grads[1]
+                g_phi_from_U = -grads[0]
 
             # return predicted g, and computed g from ∇U
             return {
@@ -421,7 +414,7 @@ class Gravity(pl.LightningModule):
             sigma_g = torch.exp(self.log_sigma_g)
             sigma_grad = torch.exp(self.log_sigma_grad)
 
-            λ = 0.1  # recommended range: 0.01–0.5
+            λ = 0.1
 
             loss = (
                     loss_g / (2 * sigma_g ** 2) +

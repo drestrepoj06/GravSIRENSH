@@ -17,6 +17,7 @@ def main(run_path=None):
     runs_dir = os.path.join(base_dir, "Outputs", "Runs")
     data_dir = os.path.join(base_dir, "Data")
     mse_consistency = None
+    mse_grad = None
 
     # === Load test dataset ===
     test_path = os.path.join(data_dir, "Samples_2190-2_250k_r0_test.parquet")
@@ -162,9 +163,9 @@ def main(run_path=None):
         )
 
         # Convert gradients to physical accelerations
-        grads_phys = scaler.unscale_acceleration_from_potential(grads, lat=lat, r=None)
-        g_theta = -grads_phys[1] * 1e5
-        g_phi = -grads_phys[0] * 1e5
+        grads_phys = scaler.unscale_gravity(grads).detach()
+        g_theta = -grads_phys[1]
+        g_phi = -grads_phys[0]
 
         g_theta = g_theta.detach()
         g_phi = g_phi.detach()
@@ -178,27 +179,34 @@ def main(run_path=None):
     elif mode == "g_hybrid":
         out = model(lon, lat)  # out is a dict
         U_pred_scaled = out["U_pred"]  # (N,1)
-
         g_pred_scaled = out["g_pred"]  # (N,2)
-
         g_from_gradU_scaled = out["g_from_gradU"]  # (N,2)
-        U_pred = scaler.unscale_potential(U_pred_scaled).detach()  # (N,1)
-        g_pred = scaler.unscale_gravity(g_pred_scaled).detach()  # (N,2)
-        g_from_gradU = scaler.unscale_gravity(g_from_gradU_scaled).detach()  # (N,2)
-        g_theta_cons = g_from_gradU[:, 0]
-        g_phi_cons = g_from_gradU[:, 1]
-        g_theta = g_pred[:, 0]
-        g_phi = g_pred[:, 1]
+        U_pred = scaler.unscale_potential(U_pred_scaled).detach()
+        g_pred = scaler.unscale_gravity(g_pred_scaled).detach()
+        g_from_gradU = scaler.unscale_gravity(g_from_gradU_scaled).detach()
+
+        g_theta, g_phi = g_pred[:, 0], g_pred[:, 1]
+        g_theta_grad, g_phi_grad = -g_from_gradU[:, 0], -g_from_gradU[:, 1]
+
+        g_mag_grad = torch.sqrt(g_theta_grad ** 2 + g_phi_grad ** 2)
+
         g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
 
         mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
+
         mse_g = (
                 np.mean((to_np(g_theta) - true_theta) ** 2) +
                 np.mean((to_np(g_phi) - true_phi) ** 2)
         )
+
+        mse_grad = (
+                np.mean((to_np(g_theta_grad) - true_theta) ** 2) +
+                np.mean((to_np(g_phi_grad) - true_phi) ** 2)
+        )
+
         mse_consistency = (
-                np.mean((to_np(g_theta_cons) - to_np(g_theta)) ** 2) +
-                np.mean((to_np(g_phi_cons) - to_np(g_phi)) ** 2)
+                np.mean((to_np(g_theta_grad) - to_np(g_theta)) ** 2) +
+                np.mean((to_np(g_phi_grad) - to_np(g_phi)) ** 2)
         )
 
     elif mode == "U_g_direct":
@@ -275,24 +283,38 @@ def main(run_path=None):
         U_pred_np = U_pred.detach().cpu().numpy().ravel()
     else:
         U_pred_np = None
+
     g_theta_np = g_theta.detach().cpu().numpy()
     g_phi_np = g_phi.detach().cpu().numpy()
     g_mag_np = g_mag.detach().cpu().numpy()
 
-    # === Compute summary statistics ===
-    print("📊 Test metrics:")
-    if mse_U is not None:
-        print(f"   MSE(U) = {mse_U:.3e}")
-    print(f"   MSE(g) = {mse_g:.3e}")
+    # Handle gradient-based g only if available
+    if mse_grad is not None:
+        g_theta_grad_np = g_theta_grad.detach().cpu().numpy()
+        g_phi_grad_np = g_phi_grad.detach().cpu().numpy()
+        g_mag_grad_np = g_mag_grad.detach().cpu().numpy()
+    else:
+        g_theta_grad_np = None
+        g_phi_grad_np = None
+        g_mag_grad_np = None
 
     # === Save predictions inside the same run folder ===
     prefix = os.path.join(latest_run, "test_results")
 
     if U_pred_np is not None:
         np.save(f"{prefix}_U.npy", U_pred_np)
+
+    # Save gradient-based gravity only when it exists
+    if g_theta_grad_np is not None:
+        np.save(f"{prefix}_g_grads_theta.npy", g_theta_grad_np)
+        np.save(f"{prefix}_g_grads_phi.npy", g_phi_grad_np)
+        np.save(f"{prefix}_g_mag_grad.npy", g_mag_grad_np)
+
+    # Save direct predicted gravity
     np.save(f"{prefix}_g_theta.npy", g_theta_np)
     np.save(f"{prefix}_g_phi.npy", g_phi_np)
     np.save(f"{prefix}_g_mag.npy", g_mag_np)
+
     print(f"💾 Predictions saved in {latest_run}")
 
     # === Metadata summary ===
@@ -309,9 +331,17 @@ def main(run_path=None):
         "g_phi": stats(g_phi_np),
         "g_mag": stats(g_mag_np),
     }
+
     if U_pred_np is not None:
         pred_stats["U"] = stats(U_pred_np)
 
+    # Add stats of gradient-based gravity where available
+    if g_theta_grad_np is not None:
+        pred_stats["g_theta_grad"] = stats(g_theta_grad_np)
+        pred_stats["g_phi_grad"] = stats(g_phi_grad_np)
+        pred_stats["g_mag_grad"] = stats(g_mag_grad_np)
+
+    # === True stats ===
     true_stats = {
         "g_theta": stats(test_df["dg_theta_mGal"].to_numpy()),
         "g_phi": stats(test_df["dg_phi_mGal"].to_numpy()),
@@ -321,36 +351,33 @@ def main(run_path=None):
     if "dU_m2_s2" in test_df.columns:
         true_stats["U"] = stats(test_df["dU_m2_s2"].to_numpy())
 
+    # === Linear baseline stats ===
     linear_mag_path = os.path.join(run_path, "linear_g_mag.npy")
 
     mse_linear = None
     linear_stats = None
 
     if os.path.exists(linear_mag_path):
-        # Load linear_g_mag
         linear_mag_np = np.load(linear_mag_path)
-
-        # Compute stats
         linear_stats = stats(linear_mag_np)
         mse_linear = float(np.mean((linear_mag_np - true_mag) ** 2))
-    # === Metadata summary ===
+
+    # === Final META ===
     meta = {
         "mode": mode,
         "samples": len(test_df),
         "mse_U": float(mse_U) if mse_U is not None else None,
         "mse_g": float(mse_g),
+        "mse_grad": float(mse_grad) if mse_grad is not None else None,
         "mse_consistency": float(mse_consistency) if mse_consistency is not None else None,
-
-        # New field:
         "mse_linear": mse_linear,
 
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+
         "stats": {
             "pred": pred_stats,
             "true": true_stats,
-
-            # New field:
-            "linear_mag": linear_stats
+            "linear_mag": linear_stats,
         }
     }
 
