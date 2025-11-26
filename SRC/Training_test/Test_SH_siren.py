@@ -163,9 +163,16 @@ def main(run_path=None):
         )
 
         # Convert gradients to physical accelerations
-        grads_phys = scaler.unscale_gravity(grads).detach()
-        g_theta = -grads_phys[1]
-        g_phi = -grads_phys[0]
+        dU_dlon_phys, dU_dlat_phys, _ = scaler.unscale_acceleration_from_potential(
+            grads, lat=lat, r=None
+        )
+
+        dU_dlon_phys = dU_dlon_phys.detach()
+        dU_dlat_phys = dU_dlat_phys.detach()
+
+        # gravity components
+        g_theta = dU_dlat_phys * 1e5
+        g_phi = dU_dlon_phys * 1e5
 
         g_theta = g_theta.detach()
         g_phi = g_phi.detach()
@@ -186,7 +193,7 @@ def main(run_path=None):
         g_from_gradU = scaler.unscale_gravity(g_from_gradU_scaled).detach()
 
         g_theta, g_phi = g_pred[:, 0], g_pred[:, 1]
-        g_theta_grad, g_phi_grad = -g_from_gradU[:, 0], -g_from_gradU[:, 1]
+        g_theta_grad, g_phi_grad = g_from_gradU[:, 0], g_from_gradU[:, 1]
 
         g_mag_grad = torch.sqrt(g_theta_grad ** 2 + g_phi_grad ** 2)
 
@@ -224,12 +231,16 @@ def main(run_path=None):
 
     elif mode == "U_g_indirect":
 
-        U_scaled, (dU_dlat, dU_dlon) = model(lon, lat, return_gradients=True)
+        U_scaled, grads = model(lon, lat, return_gradients=True)
         U_pred = scaler.unscale_potential(U_scaled).detach()
 
-        g_theta, g_phi = scaler.unscale_gravity((dU_dlon, dU_dlat))
-        g_theta = (-g_theta * 1e5).detach()
-        g_phi = (-g_phi * 1e5).detach()
+        g_theta, g_phi, _ = scaler.unscale_acceleration_from_potential(
+            grads,
+            lat=lat,
+            r=None
+        )
+        g_theta = (g_theta * 1e5).detach()
+        g_phi = (g_phi * 1e5).detach()
         g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
 
         mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
@@ -238,37 +249,45 @@ def main(run_path=None):
 
     elif mode == "U_g_hybrid":
 
-        # unpack tuple returned by forward pass
+        # Unpack outputs
         U_pred_scaled, g_pred_scaled, (gtheta_fromU_scaled, gphi_fromU_scaled) = model(lon, lat)
 
-        # ---- unscale potential ----
-        U_pred = scaler.unscale_potential(U_pred_scaled).detach()  # (N,1)
+        # ---- Unscale everything ----
+        U_pred = scaler.unscale_potential(U_pred_scaled).detach()
 
-        # ---- unscale gravity (direct g_pred) ----
-        g_pred = scaler.unscale_gravity(g_pred_scaled).detach()  # (N,2)
+        g_pred = scaler.unscale_gravity(g_pred_scaled).detach()
         g_theta = g_pred[:, 0]
         g_phi = g_pred[:, 1]
 
-        # ---- unscale consistency gravity (from grad(U_pred)) ----
-        g_from_gradU = torch.stack([gtheta_fromU_scaled, gphi_fromU_scaled], dim=1)
+        # Unscale gradient-based gravity
+        g_from_gradU = scaler.unscale_gravity(
+            torch.stack([gtheta_fromU_scaled, gphi_fromU_scaled], dim=1)
+        ).detach()
 
-        g_theta_cons = g_from_gradU[:, 0]
-        g_phi_cons = g_from_gradU[:, 1]
+        g_theta_grad = g_from_gradU[:, 0]
+        g_phi_grad = g_from_gradU[:, 1]
 
-        # ---- magnitude of direct gravity prediction ----
+        # Magnitudes
         g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
+        g_mag_grad = torch.sqrt(g_theta_grad ** 2 + g_phi_grad ** 2)
 
-        # ---- MSEs ----
         mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
 
         mse_g = (
                 np.mean((to_np(g_theta) - true_theta) ** 2) +
                 np.mean((to_np(g_phi) - true_phi) ** 2)
         )
-        mse_consistency = (
-                np.mean((to_np(g_theta_cons) - to_np(g_theta)) ** 2) +
-                np.mean((to_np(g_phi_cons) - to_np(g_phi)) ** 2)
+
+        mse_grad = (
+                np.mean((to_np(g_theta_grad) - true_theta) ** 2) +
+                np.mean((to_np(g_phi_grad) - true_phi) ** 2)
         )
+
+        mse_consistency = (
+                np.mean((to_np(g_theta_grad) - to_np(g_theta)) ** 2) +
+                np.mean((to_np(g_phi_grad) - to_np(g_phi)) ** 2)
+        )
+
     else:
         raise ValueError(f"Unsupported mode '{mode}'")
     torch.cuda.synchronize() if device.type == "cuda" else None

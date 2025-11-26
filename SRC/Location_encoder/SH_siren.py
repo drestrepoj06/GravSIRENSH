@@ -285,27 +285,27 @@ class SH_SIREN(nn.Module):
         # --- MODE 6: U + g (indirect) ---
         elif self.mode == "U_g_indirect":
             if return_gradients:
-                lon = lon.to(self.device).requires_grad_(True)
-                lat = lat.to(self.device).requires_grad_(True)
+                with torch.set_grad_enabled(True):
+                    lon = lon.to(self.device).requires_grad_(True)
+                    lat = lat.to(self.device).requires_grad_(True)
 
-                Y = self.embedding(lon, lat)
-                outputs = self.siren(Y)
+                    Y = self.embedding(lon, lat)
+                    outputs = self.siren(Y)
 
-                U_pred = outputs[:, 0:1]
+                    U_pred = outputs[:, 0:1]
 
-                grads = torch.autograd.grad(
-                    outputs=U_pred,
-                    inputs=[lon, lat],
-                    grad_outputs=torch.ones_like(U_pred),
-                    create_graph=self.training,  # True in training, False in validation
-                    retain_graph=self.training,
-                    only_inputs=True
-                )
+                    grads = torch.autograd.grad(
+                        outputs=U_pred,
+                        inputs=[lon, lat],
+                        grad_outputs=torch.ones_like(U_pred),
+                        create_graph=self.training,  # True in training, False in val
+                        retain_graph=self.training,
+                        only_inputs=True,
+                    )
 
-                dU_dlon, dU_dlat = grads
-
-                g_theta = dU_dlat
-                g_phi = dU_dlon
+                    dU_dlon, dU_dlat = grads
+                    g_theta = -dU_dlat
+                    g_phi = -dU_dlon
 
                 return U_pred, (g_theta, g_phi)
 
@@ -315,8 +315,7 @@ class SH_SIREN(nn.Module):
                     outputs = self.siren(Y)
                     return outputs
 
-        # --- MODE 7: U + g (hybrid) ---
-        elif self.mode == "U_g_hybrid": # shape (N,2)
+        elif self.mode == "U_g_hybrid":
 
             with torch.set_grad_enabled(True):
                 lon = lon.to(self.device).requires_grad_(True)
@@ -337,11 +336,8 @@ class SH_SIREN(nn.Module):
                     allow_unused=True,
                 )
 
-                grads_phys = self.scaler.unscale_acceleration_from_potential(
-                    grads, lat=lat, r=r
-                )
-                g_theta_from_U = -grads_phys[1] * 1e5
-                g_phi_from_U = -grads_phys[0] * 1e5
+                g_theta_from_U = -grads[1]
+                g_phi_from_U = -grads[0]
 
             return U_pred, g_pred, (g_theta_from_U, g_phi_from_U)
         else:
@@ -350,9 +346,10 @@ class SH_SIREN(nn.Module):
 class Gravity(pl.LightningModule):
     def __init__(self, model_cfg, scaler, lr=1e-4):
         super().__init__()
+        self.warmup_U_epochs = model_cfg.pop("warmup_U_epochs", 10)
         self.model = SH_SIREN(**model_cfg)
         self.mode = model_cfg.get("mode", "U")
-        self.warmup_U_epochs = model_cfg.get("warmup_U_epochs", 10)
+        self.lambda_consistency = 1e-3
         if self.mode in ["U_g_direct", "U_g_indirect"]:
             self.log_sigma_U = nn.Parameter(torch.tensor(0.0))
             self.log_sigma_g = nn.Parameter(torch.tensor(0.0))
@@ -414,12 +411,10 @@ class Gravity(pl.LightningModule):
             sigma_g = torch.exp(self.log_sigma_g)
             sigma_grad = torch.exp(self.log_sigma_grad)
 
-            λ = 0.1
-
             loss = (
                     loss_g / (2 * sigma_g ** 2) +
                     loss_grad / (2 * sigma_grad ** 2) +
-                    λ * loss_consistency +
+                    self.lambda_consistency*loss_consistency +
                     torch.log(sigma_g * sigma_grad)
             )
 
@@ -477,11 +472,14 @@ class Gravity(pl.LightningModule):
         elif self.mode == "U_g_hybrid":
             U_pred, g_pred, (gtheta_from_U, gphi_from_U) = y_pred
             Ugrad_pred = torch.stack([gtheta_from_U, gphi_from_U], dim=1)
+
             U_true = y_true[:, 0:1]
             g_true = y_true[:, 1:]
+
             loss_U = self.criterion(U_pred.reshape(-1), U_true.reshape(-1))
             loss_g = self.criterion(g_pred.reshape(-1), g_true.reshape(-1))
             loss_grad = self.criterion(Ugrad_pred.reshape(-1), g_true.reshape(-1))
+
             loss_consistency = self.criterion(
                 Ugrad_pred.reshape(-1),
                 g_pred.reshape(-1)
@@ -490,14 +488,13 @@ class Gravity(pl.LightningModule):
             sigma_U = torch.exp(self.log_sigma_U)
             sigma_g = torch.clamp(torch.exp(self.log_sigma_g), 1e-4, 0.5)
             sigma_grad = torch.clamp(torch.exp(self.log_sigma_grad), 1e-4, 0.5)
-            sigma_consist = torch.clamp(torch.exp(self.log_sigma_consistency), 1e-1, 0.5)
 
             loss = (
                     loss_U / (2 * sigma_U ** 2)
                     + loss_g / (2 * sigma_g ** 2)
                     + loss_grad / (2 * sigma_grad ** 2)
-                    + loss_consistency / (2 * sigma_consist ** 2)
-                    + torch.log(sigma_U * sigma_g * sigma_grad * sigma_consist)
+                    + torch.log(sigma_U * sigma_g * sigma_grad)
+                    + self.lambda_consistency * loss_consistency
             )
 
             if return_components:
@@ -507,23 +504,24 @@ class Gravity(pl.LightningModule):
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
 
-    def _log_sigmas(self, prefix):
 
-        if hasattr(self, "log_sigma_U"):
-            w_U = torch.sigmoid(self.log_sigma_U)
-            self.log(f"{prefix}_w_U", w_U, on_epoch=True)
-
-        if hasattr(self, "log_sigma_g"):
-            w_g = torch.sigmoid(self.log_sigma_g)
-            self.log(f"{prefix}_w_g", w_g, on_epoch=True)
-
-        if hasattr(self, "log_sigma_grad"):
-            w_grad = torch.sigmoid(self.log_sigma_grad)
-            self.log(f"{prefix}_w_grad", w_grad, on_epoch=True)
-
-        if hasattr(self, "log_sigma_consistency"):
-            w_con = torch.sigmoid(self.log_sigma_consistency)
-            self.log(f"{prefix}_w_consistency", w_con, on_epoch=True)
+    # def _log_sigmas(self, prefix):
+    #
+    #     if hasattr(self, "log_sigma_U"):
+    #         w_U = torch.sigmoid(self.log_sigma_U)
+    #         self.log(f"{prefix}_w_U", w_U, on_epoch=True)
+    #
+    #     if hasattr(self, "log_sigma_g"):
+    #         w_g = torch.sigmoid(self.log_sigma_g)
+    #         self.log(f"{prefix}_w_g", w_g, on_epoch=True)
+    #
+    #     if hasattr(self, "log_sigma_grad"):
+    #         w_grad = torch.sigmoid(self.log_sigma_grad)
+    #         self.log(f"{prefix}_w_grad", w_grad, on_epoch=True)
+    #
+    #     if hasattr(self, "log_sigma_consistency"):
+    #         w_con = torch.sigmoid(self.log_sigma_consistency)
+    #         self.log(f"{prefix}_w_consistency", w_con, on_epoch=True)
 
     def training_step(self, batch, batch_idx=None):
 
@@ -553,7 +551,7 @@ class Gravity(pl.LightningModule):
                 self.log(f"train_{name}_loss", comp, on_step=False, on_epoch=True)
 
         # Log all sigmas
-        self._log_sigmas("train")
+        #self._log_sigmas("train")
         # Log current learning rate
         lr = self.trainer.optimizers[0].param_groups[0]['lr']
         self.log("lr", lr, on_step=False, on_epoch=True)
@@ -589,7 +587,7 @@ class Gravity(pl.LightningModule):
                 self.log(f"val_{name}_loss", comp, on_epoch=True)
 
         # Log learned sigmas
-        self._log_sigmas("val")
+        # self._log_sigmas("val")
 
         return total_loss
 
