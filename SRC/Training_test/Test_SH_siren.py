@@ -321,8 +321,8 @@ def main(run_path=None):
 
     # Save gradient-based gravity only when it exists
     if g_theta_grad_np is not None:
-        np.save(f"{prefix}_g_grads_theta.npy", g_theta_grad_np)
-        np.save(f"{prefix}_g_grads_phi.npy", g_phi_grad_np)
+        np.save(f"{prefix}_g_theta_grad.npy", g_theta_grad_np)
+        np.save(f"{prefix}_g_phi_grad.npy", g_phi_grad_np)
         np.save(f"{prefix}_g_mag_grad.npy", g_mag_grad_np)
 
     # Save direct predicted gravity
