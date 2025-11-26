@@ -104,7 +104,9 @@ def main(run_path=None):
 
     if mode == "U":
         # Predict potential and optionally gradients
-        U_scaled, grads = model(lon, lat, return_gradients=True)
+        lon = lon.clone().detach().requires_grad_(True)
+        lat = lat.clone().detach().requires_grad_(True)
+        U_scaled = model(lon, lat)
         U_pred = scaler.unscale_potential(U_scaled).detach()
 
         grads = torch.autograd.grad(
@@ -147,7 +149,7 @@ def main(run_path=None):
         lon = lon.clone().detach().requires_grad_(True)
         lat = lat.clone().detach().requires_grad_(True)
 
-        U_scaled, _ = model(lon, lat)  # model.forward returns scaled outputs!
+        U_scaled = model(lon, lat)
         U_pred = scaler.unscale_potential(U_scaled).detach()
 
         grads = torch.autograd.grad(
@@ -213,16 +215,22 @@ def main(run_path=None):
         )
 
     elif mode == "U_g_indirect":
-        U_pred, (g_theta, g_phi) = model(lon, lat)
-        U_pred = scaler.unscale_potential(U_pred).detach()
-        g_theta = g_theta.detach()
-        g_phi = g_phi.detach()
+
+        U_scaled, (dU_dlat, dU_dlon) = model(lon, lat, return_gradients=True)
+        U_pred = scaler.unscale_potential(U_scaled).detach()
+
+        g_theta, g_phi = scaler.unscale_acceleration_from_potential(
+            (dU_dlon, dU_dlat),
+            lat=lat,
+            r=None
+        )
+        g_theta = (-g_theta * 1e5).detach()
+        g_phi = (-g_phi * 1e5).detach()
         g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
 
         mse_U = np.mean((to_np(U_pred).ravel() - true_U) ** 2)
-        mse_g = np.mean((to_np(g_theta) - true_theta) ** 2) + np.mean(
-            (to_np(g_phi) - true_phi) ** 2
-        )
+        mse_g = np.mean((to_np(g_theta) - true_theta) ** 2) + \
+                np.mean((to_np(g_phi) - true_phi) ** 2)
 
     elif mode == "U_g_hybrid":
 
