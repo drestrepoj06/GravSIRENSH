@@ -142,6 +142,7 @@ def main():
     hidden_omega_0 = 1.0
     exclude_degrees = None
     epochs = 1
+    warmup_U_epochs = 2000
 
     run_name = (
         f"sh_siren_LR={lr}_mode={mode}_BS={batch_size}_"
@@ -163,7 +164,8 @@ def main():
         scaler=scaler,
         cache_path=os.path.join(base_dir, "Data", "cache_train.npy"),
         exclude_degrees=exclude_degrees,
-        mode=mode
+        mode=mode,
+        warmup_U_epochs = warmup_U_epochs
     )
 
     datamodule = GravityDataModule(train_df, val_df, scaler=scaler, mode=mode, batch_size=batch_size)
