@@ -69,48 +69,48 @@ class SHSirenScaler:
         return g_scaled * self.g_std + self.g_mean
 
     # === INDIRECT GRAVITY (FROM POTENTIAL GRADS) ===
-    def unscale_acceleration_from_potential(self, grads, lat, r=None):
-        """
-        grads = (dU_dlon_scaled, dU_dlat_scaled, [dU_dr_scaled])
-        These gradients come from the NN output in STANDARDIZED POTENTIAL space.
-
-        Converts them into PHYSICAL accelerations in m/s².
-        """
-
-        if self.U_mean is None or self.U_std is None:
-            raise ValueError("Scaler not fitted for potential (required for indirect g).")
-
-        # recover the scaling factor
-        S = self.U_std
-
-        dU_dlon_scaled, dU_dlat_scaled, *rest = grads
-        deg2rad = np.pi / 180.0
-
-        # radius
-        if r is None:
-            r_phys = torch.tensor(self.r_scale, dtype=dU_dlon_scaled.dtype,
-                                  device=dU_dlon_scaled.device)
-        else:
-            r_phys = r
-
-        # convert lat to radians
-        lat_rad = lat * deg2rad
-
-        # === Convert angular derivatives to physical gradients ===
-        # dU/dλ = (std_U) * (1/(r cos φ)) * dU_scaled/dlon
-        dU_dlon_phys = S * (deg2rad / (r_phys * torch.cos(lat_rad))) * dU_dlon_scaled
-
-        # dU/dφ = (std_U) * (1/r) * dU_scaled/dlat
-        dU_dlat_phys = S * (deg2rad / r_phys) * dU_dlat_scaled
-
-        # Radial derivative (if present)
-        if rest:
-            dU_dr_scaled = rest[0]
-            dU_dr_phys = S * (1.0 / self.r_scale) * dU_dr_scaled
-        else:
-            dU_dr_phys = None
-
-        return dU_dlon_phys, dU_dlat_phys, dU_dr_phys
+    # def unscale_acceleration_from_potential(self, grads, lat, r=None):
+    #     """
+    #     grads = (dU_dlon_scaled, dU_dlat_scaled, [dU_dr_scaled])
+    #     These gradients come from the NN output in STANDARDIZED POTENTIAL space.
+    #
+    #     Converts them into PHYSICAL accelerations in m/s².
+    #     """
+    #
+    #     if self.U_mean is None or self.U_std is None:
+    #         raise ValueError("Scaler not fitted for potential (required for indirect g).")
+    #
+    #     # recover the scaling factor
+    #     S = self.U_std
+    #
+    #     dU_dlon_scaled, dU_dlat_scaled, *rest = grads
+    #     deg2rad = np.pi / 180.0
+    #
+    #     # radius
+    #     if r is None:
+    #         r_phys = torch.tensor(self.r_scale, dtype=dU_dlon_scaled.dtype,
+    #                               device=dU_dlon_scaled.device)
+    #     else:
+    #         r_phys = r
+    #
+    #     # convert lat to radians
+    #     lat_rad = lat * deg2rad
+    #
+    #     # === Convert angular derivatives to physical gradients ===
+    #     # dU/dλ = (std_U) * (1/(r cos φ)) * dU_scaled/dlon
+    #     dU_dlon_phys = S * (deg2rad / (r_phys * torch.cos(lat_rad))) * dU_dlon_scaled
+    #
+    #     # dU/dφ = (std_U) * (1/r) * dU_scaled/dlat
+    #     dU_dlat_phys = S * (deg2rad / r_phys) * dU_dlat_scaled
+    #
+    #     # Radial derivative (if present)
+    #     if rest:
+    #         dU_dr_scaled = rest[0]
+    #         dU_dr_phys = S * (1.0 / self.r_scale) * dU_dr_scaled
+    #     else:
+    #         dU_dr_phys = None
+    #
+    #     return dU_dlon_phys, dU_dlat_phys, dU_dr_phys
 
 # Based on the code https://github.com/MarcCoru/locationencoder/blob/main/locationencoder/locationencoder.py
 # But only for the encoder SH + Siren network and the autograd of Martin & Schaub (2022)
@@ -160,11 +160,19 @@ class SH_SIREN(nn.Module):
             exclude_degrees=exclude_degrees
         )
 
-        self.embedding.build_theta_lut()
-        dummy_phi = torch.tensor([0.0])
-        dummy_lat = torch.tensor([0.0])
-        Y_dummy = self.embedding(dummy_phi, dummy_lat)
-        in_features = Y_dummy.shape[1]
+        # Only build LUT if we actually use SH (lmax > 0 and LUT enabled)
+        if lmax > 0 and self.embedding.use_theta_lut:
+            self.embedding.build_theta_lut()
+
+        # Figure out input dimensionality
+        if lmax == 0:
+            # Raw normalized lon/lat → 2 features
+            in_features = 2
+        else:
+            dummy_lon = torch.tensor([0.0])
+            dummy_lat = torch.tensor([0.0])
+            Y_dummy = self.embedding(dummy_lon, dummy_lat)
+            in_features = Y_dummy.shape[1]
 
         # --- Determine network output size ---
         if mode in ["U", "g_indirect"]:
@@ -341,10 +349,10 @@ class SH_SIREN(nn.Module):
 class Gravity(pl.LightningModule):
     def __init__(self, model_cfg, scaler, lr=1e-4):
         super().__init__()
-        self.warmup_U_epochs = model_cfg.pop("warmup_U_epochs", 10)
+        #self.warmup_U_epochs = model_cfg.pop("warmup_U_epochs", 10)
         self.model = SH_SIREN(**model_cfg)
         self.mode = model_cfg.get("mode", "U")
-        self.lambda_consistency = 1e-3
+        self.lambda_consistency = 1e-1
         if self.mode in ["U_g_direct"]: # "U_g_indirect"]:
             self.log_sigma_U = nn.Parameter(torch.tensor(0.0))
             self.log_sigma_g = nn.Parameter(torch.tensor(0.0))
@@ -585,8 +593,8 @@ class Gravity(pl.LightningModule):
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
             mode="min",
-            factor=0.1,
-            patience=100,  # epochs with no val improvement
+            factor=0.5,
+            patience=50,  # epochs with no val improvement
             min_lr=1e-6
         )
 

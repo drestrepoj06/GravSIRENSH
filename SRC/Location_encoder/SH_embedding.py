@@ -24,6 +24,8 @@ class SHEmbedding:
         self.normalization = normalization
         self.cache_path = cache_path
         self.use_theta_lut = use_theta_lut
+        if self.lmax == 0:
+            self.use_theta_lut = False
         self.n_theta = n_theta
         self.exclude_degrees = exclude_degrees or []
 
@@ -105,6 +107,17 @@ class SHEmbedding:
         If use_theta_lut=True -> differentiable wrt lat via LUT interpolation."""
         lon = lon.to(torch.float32)
         lat = lat.to(torch.float32)
+
+        if self.lmax == 0:
+            # use radians (better for SIREN)
+            lon_rad = torch.deg2rad(lon)
+            lat_rad = torch.deg2rad(lat)
+
+            lon_norm = lon_rad / torch.pi  # [-1,1]
+            lat_norm = lat_rad / (0.5 * torch.pi)  # [-1,1]
+
+            return torch.stack([lon_norm, lat_norm], dim=-1)
+
         device = lon.device
 
         phi = torch.deg2rad(lon)
@@ -118,38 +131,92 @@ class SHEmbedding:
         return Y
 
     def _assemble_torch(self, phi, A_pack, lmax):
+        """
+        Vectorized assembly of real spherical harmonics.
+
+        - Removes the inner loop over m (vectorized over m for each l).
+        - Keeps the original column ordering:
+            [Y_{l,-l}, ..., Y_{l,-1}, Y_{l,0}, Y_{l,1}, ..., Y_{l,l}]
+          realized as [sin terms (m=l..1), m=0, cos terms (m=1..l)].
+        - If exclude_degrees is non-empty, falls back to the original
+          loop-based implementation to keep behavior identical.
+        """
+        device = phi.device
         N = A_pack.shape[0]
-        Y = torch.empty((N, (lmax + 1) ** 2), dtype=torch.float32, device=phi.device)
 
-        m_grid = torch.arange(lmax + 1, dtype=torch.float32, device=phi.device)
-        sin_mphi = torch.sin(phi[:, None] * m_grid[None, :])
-        cos_mphi = torch.cos(phi[:, None] * m_grid[None, :])
+        # If we are excluding some degrees, keep the old, safe path
+        if self.exclude_degrees:
+            # --- original implementation as a fallback ---
+            Y = torch.empty((N, (lmax + 1) ** 2), dtype=torch.float32, device=device)
 
-        col = 0
-        amp_col = 0
-        for l in range(lmax + 1):
-            # 👇 skip unwanted degrees
-            if l in self.exclude_degrees:
+            m_grid = torch.arange(lmax + 1, dtype=torch.float32, device=device)
+            sin_mphi = torch.sin(phi[:, None] * m_grid[None, :])
+            cos_mphi = torch.cos(phi[:, None] * m_grid[None, :])
+
+            col = 0
+            amp_col = 0
+            for l in range(lmax + 1):
+                if l in self.exclude_degrees:
+                    amp_col += (l + 1)
+                    continue
+
+                A_l = A_pack[:, amp_col:amp_col + (l + 1)]
                 amp_col += (l + 1)
-                continue
 
+                # sin terms: m = l, ..., 1
+                for m in range(l, 0, -1):
+                    Y[:, col] = A_l[:, m] * sin_mphi[:, int(m)]
+                    col += 1
+                # m = 0 term
+                Y[:, col] = A_l[:, 0]
+                col += 1
+                # cos terms: m = 1, ..., l
+                for m in range(1, l + 1):
+                    Y[:, col] = A_l[:, m] * cos_mphi[:, int(m)]
+                    col += 1
+
+            Y = Y[:, :col]
+            return Y
+
+        # ============================
+        # Fast path (no excluded l's)
+        # ============================
+        # We know the final number of columns is (lmax + 1)^2
+        Y = torch.empty((N, (lmax + 1) ** 2), dtype=torch.float32, device=device)
+
+        # m = 0..lmax trig factors (shared for all l)
+        m_grid = torch.arange(lmax + 1, dtype=torch.float32, device=device)
+        sin_mphi = torch.sin(phi[:, None] * m_grid[None, :])  # (N, lmax+1)
+        cos_mphi = torch.cos(phi[:, None] * m_grid[None, :])  # (N, lmax+1)
+
+        amp_col = 0  # position in A_pack
+
+        for l in range(lmax + 1):
+            # A_l has shape (N, l+1), columns m=0..l
             A_l = A_pack[:, amp_col:amp_col + (l + 1)]
             amp_col += (l + 1)
 
-            # sin terms
-            for m in range(l, 0, -1):
-                Y[:, col] = A_l[:, m] * sin_mphi[:, int(m)]
-                col += 1
-            # m = 0 term
-            Y[:, col] = A_l[:, 0]
-            col += 1
-            # cos terms
-            for m in range(1, l + 1):
-                Y[:, col] = A_l[:, m] * cos_mphi[:, int(m)]
-                col += 1
+            # In the no-exclusion case, the l-block in Y starts at column l^2
+            # and has size (2l + 1) columns.
+            start = l * l
 
-        # Trim Y to the actual number of filled columns
-        Y = Y[:, :col]
+            if l > 0:
+                # --- sin terms: m = l, ..., 1 ---
+                # A_l[:, 1:] -> m = 1..l ; flip -> m = l..1
+                sin_amp = torch.flip(A_l[:, 1:], dims=[1])  # (N, l)
+                sin_trig = torch.flip(sin_mphi[:, 1:l + 1], dims=[1])  # (N, l)
+                Y[:, start:start + l] = sin_amp * sin_trig  # (N, l)
+
+            # --- m = 0 term ---
+            Y[:, start + l] = A_l[:, 0]
+
+            if l > 0:
+                # --- cos terms: m = 1..l ---
+                cos_amp = A_l[:, 1:]  # (N, l), m=1..l
+                cos_trig = cos_mphi[:, 1:l + 1]  # (N, l)
+                Y[:, start + l + 1:start + l + 1 + l] = cos_amp * cos_trig
+
+        # No excluded degrees -> Y already has the exact shape (N, (lmax+1)^2)
         return Y
 
     __call__ = forward

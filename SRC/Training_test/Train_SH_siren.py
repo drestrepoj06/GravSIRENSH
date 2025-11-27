@@ -8,6 +8,7 @@ import json
 import lightning.pytorch as pl
 from lightning.pytorch.loggers import WandbLogger
 import numpy as np
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from SRC.Location_encoder.SH_siren import SHSirenScaler, Gravity
@@ -138,14 +139,14 @@ def main():
     mode = "U"
     lr = 5e-3
     batch_size = 262144
-    lmax = 5
+    lmax = 0
     hidden_layers = 2
     hidden_features = 4
     first_omega_0 = 20
     hidden_omega_0 = 1.0
     exclude_degrees = None
     epochs = 1
-    warmup_U_epochs = 2000
+    #warmup_U_epochs = 2000
 
     run_name = (
         f"sh_siren_LR={lr}_mode={mode}_BS={batch_size}_"
@@ -167,8 +168,8 @@ def main():
         scaler=scaler,
         cache_path=os.path.join(base_dir, "Data", "cache_train.npy"),
         exclude_degrees=exclude_degrees,
-        mode=mode,
-        warmup_U_epochs = warmup_U_epochs
+        mode=mode
+        #warmup_U_epochs = warmup_U_epochs
     )
 
     datamodule = GravityDataModule(train_df, val_df, scaler=scaler, mode=mode, batch_size=batch_size)
@@ -181,9 +182,26 @@ def main():
         log_model=False
     )
 
+    early_stop = EarlyStopping(
+        monitor="val_loss",
+        patience=10,      # number of epochs with no improvement
+        min_delta=1e-4,    # minimum improvement to count
+        mode="min",
+        verbose=True
+    )
+
+    # (optional) best checkpoint saving
+    checkpoint = ModelCheckpoint(
+        monitor="val_loss",
+        save_top_k=1,
+        mode="min",
+        filename="best-{epoch:04d}-{val_loss:.4f}"
+    )
+
     trainer = pl.Trainer(
         max_epochs=epochs,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
+        callbacks=[early_stop, checkpoint],
         devices=1,
         log_every_n_steps=1,
         num_sanity_val_steps=0,
@@ -191,7 +209,7 @@ def main():
     )
 
     trainer.fit(module, datamodule=datamodule)
-
+    actual_epochs = trainer.current_epoch
     model_path = os.path.join(run_dir, "model.pth")
     torch.save({
         "state_dict": module.model.state_dict(),
@@ -208,7 +226,8 @@ def main():
         "device": str(device),
         "mode": mode,
         "lr": lr,
-        "epochs": epochs,
+        "epochs_requested": epochs,
+        "epochs_trained": actual_epochs,
         "batch_size": batch_size,
         "lmax": lmax,
         "hidden_layers": hidden_layers,
