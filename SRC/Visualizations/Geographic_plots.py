@@ -311,18 +311,41 @@ class GravityDataPlotter:
         print(f"Separate predictions figure saved: {output_path_pred}")
         plt.close()
 
+        # --- Overlaid histogram: True vs Predicted ---
         plt.figure(figsize=(8, 5))
-        plt.hist(self.sample_df[pred_col], bins=100, color="steelblue", edgecolor="black", alpha=0.8)
-        plt.xlabel(f"Predicted {symbol} ({unit})")
+
+        plt.hist(
+            self.sample_df[true_col],
+            bins=100,
+            color="orange",
+            alpha=0.6,
+            edgecolor="black",
+            label=f"True {symbol}"
+        )
+
+        plt.hist(
+            self.sample_df[pred_col],
+            bins=100,
+            color="steelblue",
+            alpha=0.6,
+            edgecolor="black",
+            label=f"Predicted {symbol}"
+        )
+
+        plt.xlabel(f"{symbol} ({unit})")
         plt.ylabel("Frequency")
-        plt.title(f"Histogram of Predicted {symbol}\n(Data L{self.lmax}, {self.mode})", fontsize=11)
+        plt.title(f"Histogram: True vs Predicted {symbol}\n(Data L{self.lmax}, {self.mode})", fontsize=11)
         plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
+        plt.legend()
         plt.tight_layout()
 
-        hist_suffix = f"{self._fname_suffix()}_{self.target_type}"
-        output_path_hist = os.path.join(self.output_dir, f"Histogram_Predicted_{hist_suffix}.png")
-        plt.savefig(output_path_hist, dpi=300, bbox_inches="tight")
-        print(f"Histogram of predictions saved: {output_path_hist}")
+        hist_overlay_suffix = f"{self._fname_suffix()}_{self.target_type}"
+        output_path_hist_overlay = os.path.join(
+            self.output_dir,
+            f"Histogram_True_vs_Predicted_{hist_overlay_suffix}.png"
+        )
+        plt.savefig(output_path_hist_overlay, dpi=300, bbox_inches="tight")
+        print(f"Overlaid histogram saved: {output_path_hist_overlay}")
         plt.close()
 
         if self.linear_available:
