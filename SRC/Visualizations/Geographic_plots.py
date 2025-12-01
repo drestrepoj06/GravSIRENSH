@@ -312,11 +312,28 @@ class GravityDataPlotter:
         plt.close()
 
         # --- Overlaid histogram: True vs Predicted ---
+        true_vals = self.sample_df[true_col].to_numpy()
+        pred_vals = self.sample_df[pred_col].to_numpy()
+
+        combined_vals = np.concatenate([true_vals, pred_vals])
+        unique_vals = np.unique(combined_vals)
+
+        # Skip if constant or near-constant
+        data_range = combined_vals.max() - combined_vals.min()
+        if unique_vals.size <= 1 or data_range < 1e-9:
+            print("⚠️ Histogram skipped: not enough variation or range too small.")
+            return
+
+        # Safe number of bins
+        num_bins = min(50, max(5, unique_vals.size // 5))  # safer bin rule
         plt.figure(figsize=(8, 5))
 
+        true_1d = np.asarray(self.sample_df[true_col]).ravel()
+        pred_1d = np.asarray(self.sample_df[pred_col]).ravel()
+
         plt.hist(
-            self.sample_df[true_col],
-            bins=100,
+            true_1d,
+            bins=num_bins,
             color="orange",
             alpha=0.6,
             edgecolor="black",
@@ -324,8 +341,8 @@ class GravityDataPlotter:
         )
 
         plt.hist(
-            self.sample_df[pred_col],
-            bins=100,
+            pred_1d,
+            bins=num_bins,
             color="steelblue",
             alpha=0.6,
             edgecolor="black",

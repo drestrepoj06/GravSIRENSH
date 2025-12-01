@@ -19,7 +19,7 @@ class SHSirenScaler:
     This avoids the catastrophic gradient amplification created by min–max scaling.
     """
 
-    def __init__(self, mode="U", r_scale=6.371e6):
+    def __init__(self, mode="U", r_scale=6378136.6):
         self.mode = mode
         self.r_scale = r_scale
 
