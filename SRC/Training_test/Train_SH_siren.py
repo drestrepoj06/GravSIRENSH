@@ -10,6 +10,7 @@ from datetime import datetime
 import json
 import lightning.pytorch as pl
 from lightning.pytorch.loggers import WandbLogger
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 import numpy as np
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
@@ -17,7 +18,6 @@ from SRC.Location_encoder.SH_siren import SHSirenScaler, Gravity
 import SRC.Training_test.Test_SH_siren as test_script
 from SRC.Visualizations.Geographic_plots import GravityDataPlotter
 from SRC.Linear.Linear_equivalent import LinearEquivalentGenerator
-
 
 
 
@@ -42,6 +42,9 @@ class GravityDataset(torch.utils.data.Dataset):
         if mode == "U":
             U_phys = df["dU_m2_s2"].values
             U_scaled = self.scaler.scale_potential(U_phys)
+            cols = ["dg_theta_mGal", "dg_phi_mGal"]
+            g_phys = df[cols].values
+            g_scaled = self.scaler.scale_gravity(g_phys)
             self.y = torch.tensor(U_scaled, dtype=torch.float32).unsqueeze(1)
 
         elif mode in ["g_direct"]:
@@ -70,31 +73,31 @@ class GravityDataset(torch.utils.data.Dataset):
             y = np.column_stack([U_scaled, g_scaled])
             self.y = torch.tensor(y, dtype=torch.float32)
 
-        # --- U + g (direct multitask) ---
-        elif mode == "U_g_direct":
-            U_phys = df["dU_m2_s2"].values
-            g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
-            U_scaled = self.scaler.scale_potential(U_phys)
-            g_scaled = self.scaler.scale_gravity(g_phys)
-            y = np.column_stack([U_scaled, g_scaled])
-            self.y = torch.tensor(y, dtype=torch.float32)
-
-        # --- U + g (indirect multitask) ---
-        elif mode == "U_g_indirect":
-            U_phys = df["dU_m2_s2"].values
-            g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
-            U_scaled = self.scaler.scale_potential(U_phys)
-            g_scaled = self.scaler.scale_gravity(g_phys)
-            y = np.column_stack([U_scaled, g_scaled])
-            self.y = torch.tensor(y, dtype=torch.float32)
-
-        elif mode == "U_g_hybrid":
-            U_phys = df["dU_m2_s2"].values
-            g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
-            U_scaled = self.scaler.scale_potential(U_phys)
-            g_scaled = self.scaler.scale_gravity(g_phys)
-            y = np.column_stack([U_scaled, g_scaled])
-            self.y = torch.tensor(y, dtype=torch.float32)
+        # # --- U + g (direct multitask) ---
+        # elif mode == "U_g_direct":
+        #     U_phys = df["dU_m2_s2"].values
+        #     g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
+        #     U_scaled = self.scaler.scale_potential(U_phys)
+        #     g_scaled = self.scaler.scale_gravity(g_phys)
+        #     y = np.column_stack([U_scaled, g_scaled])
+        #     self.y = torch.tensor(y, dtype=torch.float32)
+        #
+        # # --- U + g (indirect multitask) ---
+        # elif mode == "U_g_indirect":
+        #     U_phys = df["dU_m2_s2"].values
+        #     g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
+        #     U_scaled = self.scaler.scale_potential(U_phys)
+        #     g_scaled = self.scaler.scale_gravity(g_phys)
+        #     y = np.column_stack([U_scaled, g_scaled])
+        #     self.y = torch.tensor(y, dtype=torch.float32)
+        #
+        # elif mode == "U_g_hybrid":
+        #     U_phys = df["dU_m2_s2"].values
+        #     g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
+        #     U_scaled = self.scaler.scale_potential(U_phys)
+        #     g_scaled = self.scaler.scale_gravity(g_phys)
+        #     y = np.column_stack([U_scaled, g_scaled])
+        #     self.y = torch.tensor(y, dtype=torch.float32)
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
@@ -139,13 +142,13 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "g_direct"
+    mode = "g_indirect"
     lr = 5e-3
     batch_size = 262144
-    lmax = 10
+    lmax = 3
     hidden_layers = 2
     hidden_features = 8
-    first_omega_0 = 20
+    first_omega_0 = 5
     hidden_omega_0 = 1.0
     exclude_degrees = None
     epochs = 1
@@ -182,12 +185,31 @@ def main():
         log_model=False
     )
 
+    early_stop = EarlyStopping(
+        monitor="val_loss",
+        patience=10,  # number of epochs with no improvement
+        min_delta=1e-4,  # minimum improvement to count
+        mode="min",
+        verbose=True
+    )
+
+    # (optional) best checkpoint saving
+    checkpoint = ModelCheckpoint(
+        monitor="val_loss",
+        save_top_k=1,
+        mode="min",
+        filename="best-{epoch:04d}-{val_loss:.4f}"
+    )
+
     trainer = pl.Trainer(
         max_epochs=epochs,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
+        callbacks=[early_stop, checkpoint],
         devices=1,
         log_every_n_steps=1,
         num_sanity_val_steps=0,
+        gradient_clip_val=1.0,
+        gradient_clip_algorithm="norm",
         logger=wandb_logger
     )
 
@@ -228,8 +250,6 @@ def main():
     print(f"\n✅ Model saved at: {model_path}")
     print(f"📝 Config saved at: {config_path}")
 
-    test_script.main(run_path=run_dir)
-
     data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_r0_test.parquet")
 
     if trainer.is_global_zero:
@@ -238,47 +258,36 @@ def main():
     output_dir = run_dir
     predictions_dir = run_dir
 
-    modes_with_potential = ["U", "U_g_direct",  "g_indirect", "U_g_indirect", "g_hybrid", "U_g_hybrid"]
-    modes_accel_only = ["g_direct"]
+    test_script.main(run_path=run_dir)
 
-    if mode in modes_with_potential:
-        print("🌀 Plotting potential and acceleration maps...")
+    PLOTS_BY_MODE = {
+        "U": ["potential", "acceleration"],
+        "U_g_direct": ["potential", "acceleration"],
+        "g_indirect": ["potential", "acceleration"],
+        "g_direct": ["acceleration"],
+        "g_hybrid": ["potential", "acceleration", "gradients"],
+        # "U_g_indirect": ["potential", "acceleration"],
+        # "U_g_hybrid": ["potential", "acceleration", "gradients"],
+    }
 
-        plotter_potential = GravityDataPlotter(
-            data_path=data_path,
-            output_dir=output_dir,
-            predictions_dir=predictions_dir,
-            linear_dir=predictions_dir,
-            target_type="potential"
-        )
-        plotter_potential.plot_map()
-        plotter_potential.plot_scatter()
+    targets_to_plot = PLOTS_BY_MODE.get(mode, None)
 
-        plotter_accel = GravityDataPlotter(
-            data_path=data_path,
-            output_dir=output_dir,
-            predictions_dir=predictions_dir,
-            linear_dir=predictions_dir,
-            target_type="acceleration"
-        )
-        plotter_accel.plot_map()
-        plotter_accel.plot_scatter()
-
-    elif mode in modes_accel_only:
-        print("⚡ Plotting acceleration maps...")
-
-        plotter_accel = GravityDataPlotter(
-            data_path=data_path,
-            output_dir=output_dir,
-            predictions_dir=predictions_dir,
-            linear_dir=predictions_dir,
-            target_type="acceleration"
-        )
-        plotter_accel.plot_map()
-        plotter_accel.plot_scatter()
-
-    else:
+    if targets_to_plot is None:
         print(f"⚠️ Mode '{mode}' not recognized for plotting.")
+    else:
+        for target in targets_to_plot:
+            print(f"📡 Plotting {target} maps...")
+
+            plotter = GravityDataPlotter(
+                data_path=data_path,
+                output_dir=output_dir,
+                predictions_dir=predictions_dir,
+                linear_dir=predictions_dir,
+                target_type=target
+            )
+
+            plotter.plot_map()
+            plotter.plot_scatter()
 
 if __name__ == "__main__":
     import multiprocessing as mp

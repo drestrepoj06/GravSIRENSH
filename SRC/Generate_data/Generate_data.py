@@ -16,13 +16,10 @@ class GravityDataGenerator:
         self.output_dir = output_dir
         self.altitude = altitude
 
-        # Ensure directory exists
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # Determine actual number of samples (after generation)
         n_final = len(self.samples) if hasattr(self, "samples") else n_samples
 
-        # Use actual number in filename
         sample_tag = self._format_samples(n_final)
 
         self.output_file = os.path.join(
@@ -54,23 +51,23 @@ class GravityDataGenerator:
         deg_full = np.arange(self.lmax_full + 1)
         deg_low = np.arange(self.lmax_base + 1)
 
-        scale_V_full = (self.r0 / r1) ** deg_full
-        scale_V_low = (self.r0 / r1) ** deg_low
+        scale_U_full = (self.r0 / r1) ** deg_full
+        scale_U_low = (self.r0 / r1) ** deg_low
         scale_g_full = (self.r0 / r1) ** (deg_full + 2)
         scale_g_low = (self.r0 / r1) ** (deg_low + 2)
 
-        clm_full_V = self._scale_clm(clm_full, scale_V_full)
-        clm_low_V = self._scale_clm(clm_low, scale_V_low)
+        clm_full_U = self._scale_clm(clm_full, scale_U_full)
+        clm_low_U = self._scale_clm(clm_low, scale_U_low)
         clm_full_g = self._scale_clm(clm_full, scale_g_full)
         clm_low_g = self._scale_clm(clm_low, scale_g_low)
 
         res_full = clm_full_g.expand(lmax=self.lmax_full)
         res_low = clm_low_g.expand(lmax=self.lmax_full)
 
-        res_full_V = clm_full_V.expand(lmax=self.lmax_full)
-        res_low_V = clm_low_V.expand(lmax=self.lmax_full)
+        res_full_U = clm_full_U.expand(lmax=self.lmax_full)
+        res_low_U = clm_low_U.expand(lmax=self.lmax_full)
 
-        return res_full, res_low, res_full_V, res_low_V
+        return res_full, res_low, res_full_U, res_low_U
 
     def _sample_points(self, df):
         if len(df) <= self.n_samples:
@@ -83,7 +80,6 @@ class GravityDataGenerator:
         elif self.mode == "test":
             lat_fib, lon_fib, _ = self.fibonacci_spiral_sphere(self.n_samples, self.r0)
             from scipy.spatial import cKDTree
-            # From the pysh.expand grid, give the closest coordinates to a Fibonacci grid
             coords_grid = np.vstack((df["lat"].values, df["lon"].values)).T
             tree = cKDTree(coords_grid)
             coords_fib = np.vstack((lat_fib, lon_fib)).T
@@ -113,12 +109,12 @@ class GravityDataGenerator:
         return lat_deg, lon_deg, np.vstack((x, y, z)).T
 
     def generate(self):
-        res_full, res_low, res_full_V, res_low_V = self._compute_fields()
+        res_full, res_low, res_full_U, res_low_U = self._compute_fields()
         r0 = self.r0
 
-        pot_full = res_full_V.pot.data
-        pot_low = res_low_V.pot.data
-        dV = pot_full - pot_low
+        pot_full = res_full_U.pot.data
+        pot_low = res_low_U.pot.data
+        dU = pot_full - pot_low
 
         gr_full = res_full.rad.data * 1e5
         gr_low = res_low.rad.data * 1e5
@@ -140,12 +136,12 @@ class GravityDataGenerator:
         df = pd.DataFrame({
             "lat": lat_grid.astype("float32"),
             "lon": lon_grid.astype("float32"),
-            "dV_m2_s2": dV.ravel().astype("float32"),
+            "dU_m2_s2": dU.ravel().astype("float32"),
             "dg_r_mGal": dg_r.ravel().astype("float32"),
             "dg_theta_mGal": dg_theta.ravel().astype("float32"),
             "dg_phi_mGal": dg_phi.ravel().astype("float32"),
             "dg_total_mGal": dg_total.ravel().astype("float32"),
-            "radius_m": np.full(dV.size, r0, dtype="float32")
+            "radius_m": np.full(dU.size, r0, dtype="float32")
         })
 
         df = self._sample_points(df)
