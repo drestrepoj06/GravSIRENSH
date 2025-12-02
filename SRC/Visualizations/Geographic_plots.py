@@ -32,9 +32,7 @@ class GravityDataPlotter:
         self.filename = os.path.basename(data_path)
         if "lat" in self.sample_df.columns:
             mask = np.abs(self.sample_df["lat"].values) < 89.9999
-            before = len(self.sample_df)
             self.sample_df = self.sample_df[mask].reset_index(drop=True)
-            after = len(self.sample_df)
 
         if self.output_dir is None:
             base_dir = os.path.abspath(
@@ -72,26 +70,39 @@ class GravityDataPlotter:
         return f"L{self.lmax}-{self.lmax_base}"
 
     def _load_linear_predictions(self):
-        """Loads linear model outputs from .npy files inside the run directory."""
+        """Loads linear predictions for both model-lmax and L_equiv."""
         component = "mag" if self.target_type == "acceleration" else "U"
 
-        fname = f"linear_g_{component}.npy" if component != "U" else "linear_U.npy"
-        path = os.path.join(self.linear_dir, fname)
+        fname_base = f"linear_g_{component}" if component != "U" else "linear_U"
 
-        if not os.path.exists(path):
-            print(f"⚠️ Linear model prediction file not found: {path}")
-            return
+        # Paths
+        path_model = os.path.join(self.linear_dir, f"{fname_base}_model.npy")
+        path_equiv = os.path.join(self.linear_dir, f"{fname_base}_equiv.npy")
 
-        linear_vals = np.load(path)
+        self.linear_available = False
 
-        if len(linear_vals) != len(self.sample_df):
-            print("⚠️ Linear prediction length mismatch — cannot align with test set.")
-            print(f"   Linear: {len(linear_vals)}, Data: {len(self.sample_df)}")
-            return
+        # Load model-lmax predictions
+        if os.path.exists(path_model):
+            linear_model = np.load(path_model)
+            if len(linear_model) == len(self.sample_df):
+                self.sample_df["linear_pred_model"] = linear_model
+                self.linear_available = True
+                print(f"✔ Loaded linear (model-lmax) from {path_model}")
+            else:
+                print("⚠️ linear_model length mismatch — skipping")
 
-        self.sample_df["linear_pred"] = linear_vals
-        self.linear_available = True
-        print(f"✅ Loaded linear predictions ({component}) from {path}")
+        # Load L_equiv predictions
+        if os.path.exists(path_equiv):
+            linear_equiv = np.load(path_equiv)
+            if len(linear_equiv) == len(self.sample_df):
+                self.sample_df["linear_pred_equiv"] = linear_equiv
+                self.linear_available = True
+                print(f"✔ Loaded linear (L_equiv) from {path_equiv}")
+            else:
+                print("⚠️ linear_equiv length mismatch — skipping")
+
+        if not self.linear_available:
+            print("⚠️ No linear predictions available.")
 
     def _parse_filename(self, filename):
         name = filename.replace(".parquet", "")
@@ -366,75 +377,86 @@ class GravityDataPlotter:
         plt.close()
 
         if self.linear_available:
-            plt.figure(figsize=(12, 5))
-            ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180))
+            for label, col in [
+                ("Model lmax", "linear_pred_model"),
+                ("L_equiv", "linear_pred_equiv"),
+            ]:
+                if col not in self.sample_df:
+                    continue
 
-            sc = ax.scatter(
-                self.sample_df["lon"],
-                self.sample_df["lat"],
-                c=self.sample_df["linear_pred"],
-                s=s, alpha=alpha, cmap=cmap,
-                transform=ccrs.PlateCarree()
-            )
+                plt.figure(figsize=(12, 5))
+                ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180))
 
-            ax.set_global()
-            gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
-            gl.top_labels = False
-            gl.right_labels = False
-            gl.bottom_labels = True
-            gl.left_labels = True
-
-            cbar = plt.colorbar(sc, orientation="horizontal", pad=0.08, aspect=40)
-            cbar.set_label(unit)
-            ax.set_title(f"Linear Model Prediction ({symbol})", fontsize=11, pad=10)
-
-            fname_linear = os.path.join(
-                self.output_dir,
-                f"Scatter_Linear_{self._fname_suffix()}_{self.target_type}.png"
-            )
-            plt.savefig(fname_linear, dpi=300, bbox_inches="tight")
-            print(f"Linear-only scatter saved: {fname_linear}")
-            plt.close()
-
-            fig, axes = plt.subplots(
-                1, 2, figsize=(14, 5),
-                subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)}
-            )
-
-            cols = [true_col, "linear_pred"]
-            titles = ["Ground Truth", "Linear Model"]
-
-            vmin_lin = self.sample_df[cols].min().min()
-            vmax_lin = self.sample_df[cols].max().max()
-
-            for ax, col, title in zip(axes, cols, titles):
                 sc = ax.scatter(
                     self.sample_df["lon"],
                     self.sample_df["lat"],
                     c=self.sample_df[col],
                     s=s, alpha=alpha, cmap=cmap,
-                    transform=ccrs.PlateCarree(),
-                    vmin=vmin_lin, vmax=vmax_lin
+                    transform=ccrs.PlateCarree()
                 )
 
                 ax.set_global()
                 gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
-                gl.top_labels = False
-                gl.right_labels = False
-                gl.bottom_labels = True
-                gl.left_labels = True
+                gl.top_labels = gl.right_labels = False
+                gl.bottom_labels = gl.left_labels = True
 
-                cbar = plt.colorbar(sc, ax=ax, orientation="horizontal", pad=0.08)
+                cbar = plt.colorbar(sc, orientation="horizontal", pad=0.08, aspect=40)
                 cbar.set_label(unit)
-                ax.set_title(title, fontsize=11, pad=10)
 
-            fname_compare = os.path.join(
-                self.output_dir,
-                f"Scatter_True_vs_Linear_{self._fname_suffix()}_{self.target_type}.png"
-            )
-            plt.savefig(fname_compare, dpi=300, bbox_inches="tight")
-            print(f"True-vs-linear scatter comparison saved: {fname_compare}")
-            plt.close()
+                ax.set_title(f"Linear Prediction ({label})", fontsize=11, pad=10)
+
+                fname_linear = os.path.join(
+                    self.output_dir,
+                    f"Scatter_Linear_{label}_{self._fname_suffix()}_{self.target_type}.png"
+                )
+                plt.savefig(fname_linear, dpi=300, bbox_inches="tight")
+                print(f"Saved: {fname_linear}")
+                plt.close()
+
+            for label, colname in [
+                ("Model_lmax", "linear_pred_model"),
+                ("L_equiv", "linear_pred_equiv"),
+            ]:
+
+                if colname not in self.sample_df:
+                    continue
+
+                fig, axes = plt.subplots(
+                    1, 2, figsize=(14, 5),
+                    subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)}
+                )
+
+                cols = [true_col, colname]
+                titles = ["Ground Truth", f"Linear ({label})"]
+
+                vmin_lin = self.sample_df[cols].min().min()
+                vmax_lin = self.sample_df[cols].max().max()
+
+                for ax, col, title in zip(axes, cols, titles):
+                    sc = ax.scatter(
+                        self.sample_df["lon"],
+                        self.sample_df["lat"],
+                        c=self.sample_df[col],
+                        s=s, alpha=alpha, cmap=cmap,
+                        transform=ccrs.PlateCarree(),
+                        vmin=vmin_lin, vmax=vmax_lin
+                    )
+                    ax.set_global()
+                    gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
+                    gl.top_labels = gl.right_labels = False
+                    gl.bottom_labels = gl.left_labels = True
+
+                    cbar = plt.colorbar(sc, ax=ax, orientation="horizontal", pad=0.08)
+                    cbar.set_label(unit)
+                    ax.set_title(title, fontsize=11, pad=10)
+
+                fname_compare = os.path.join(
+                    self.output_dir,
+                    f"Scatter_True_vs_Linear_{label}_{self._fname_suffix()}_{self.target_type}.png"
+                )
+                plt.savefig(fname_compare, dpi=300, bbox_inches="tight")
+                print(f"Saved True-vs-linear comparison: {fname_compare}")
+                plt.close()
 
     @classmethod
     def from_latest(cls, data_dir, output_dir=None, target_type="acceleration"):

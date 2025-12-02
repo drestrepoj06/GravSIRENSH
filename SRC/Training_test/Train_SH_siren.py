@@ -139,9 +139,9 @@ def main():
     mode = "g_indirect"
     lr = 5e-3
     batch_size = 262144
-    lmax = 0
+    lmax = 5
     hidden_layers = 2
-    hidden_features = 4
+    hidden_features = 8
     first_omega_0 = 20
     hidden_omega_0 = 1.0
     exclude_degrees = None

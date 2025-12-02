@@ -26,7 +26,6 @@ if torch.cuda.is_available():
     print(f"Device: {torch.cuda.get_device_name(0)}")
 EOF
 
-# --- Modes for job array ---
 modes=("U" "g_direct" "g_indirect" "U_g_direct" "U_g_indirect")
 mode=${modes[$SLURM_ARRAY_TASK_ID]}
 

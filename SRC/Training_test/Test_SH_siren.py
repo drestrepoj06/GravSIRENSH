@@ -345,15 +345,33 @@ def main(run_path=None):
         true_stats["U"] = stats(test_df["dU_m2_s2"].to_numpy())
 
     # === Linear baseline stats ===
-    linear_mag_path = os.path.join(run_path, "linear_g_mag.npy")
+    linear_paths = {
+        "model_lmax": os.path.join(run_path, "linear_g_mag_model.npy"),
+        "L_equiv": os.path.join(run_path, "linear_g_mag_equiv.npy"),
+    }
 
     mse_linear = None
     linear_stats = None
 
-    if os.path.exists(linear_mag_path):
-        linear_mag_np = np.load(linear_mag_path)
-        linear_stats = stats(linear_mag_np)
-        mse_linear = float(np.mean((linear_mag_np - true_mag) ** 2))
+    linear_results = {}  # To store stats for both linear models
+    mse_linear = {}  # Separate MSE for both linear baselines
+
+    for label, path in linear_paths.items():
+        if os.path.exists(path):
+            lin_vals = np.load(path)
+
+            # Match sample size
+            if len(lin_vals) != len(true_mag):
+                print(f"⚠ Length mismatch in {label}: skipping")
+                continue
+
+            # Compute stats
+            linear_results[label] = stats(lin_vals)
+            mse_linear[label] = float(np.mean((lin_vals - true_mag) ** 2))
+
+            print(f"✔ Loaded linear baseline '{label}' from {path}")
+        else:
+            print(f"⚠ Linear baseline not found at {path}")
 
     # === Final META ===
     meta = {
@@ -363,15 +381,15 @@ def main(run_path=None):
         "mse_g": float(mse_g),
         "mse_grad": float(mse_grad) if mse_grad is not None else None,
         "mse_consistency": float(mse_consistency) if mse_consistency is not None else None,
-        "mse_linear": mse_linear,
-
+        "mse_linear": mse_linear,   # now a dict with two values
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-
         "stats": {
             "pred": pred_stats,
             "true": true_stats,
-            "linear_mag": linear_stats,
-        }
+            "linear_model_lmax": linear_results.get("model_lmax"),
+            "linear_L_equiv":    linear_results.get("L_equiv"),
+        },
+
     }
 
     meta_file = f"{prefix}_report.json"

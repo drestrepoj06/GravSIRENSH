@@ -16,13 +16,10 @@ class GravityDataGenerator:
         self.output_dir = output_dir
         self.altitude = altitude
 
-        # Ensure directory exists
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # Determine actual number of samples (after generation)
         n_final = len(self.samples) if hasattr(self, "samples") else n_samples
 
-        # Use actual number in filename
         sample_tag = self._format_samples(n_final)
 
         self.output_file = os.path.join(
@@ -83,7 +80,6 @@ class GravityDataGenerator:
         elif self.mode == "test":
             lat_fib, lon_fib, _ = self.fibonacci_spiral_sphere(self.n_samples, self.r0)
             from scipy.spatial import cKDTree
-            # From the pysh.expand grid, give the closest coordinates to a Fibonacci grid
             coords_grid = np.vstack((df["lat"].values, df["lon"].values)).T
             tree = cKDTree(coords_grid)
             coords_fib = np.vstack((lat_fib, lon_fib)).T
@@ -158,14 +154,14 @@ def main():
     data_dir = os.path.join(base_dir, 'Data')
     os.makedirs(data_dir, exist_ok=True)
 
-    lmax_full = 248
+    lmax_full = 2190
     lmax_base = 2
     altitude = 0.0
 
     generator_train = GravityDataGenerator(
         lmax_full=lmax_full,
         lmax_base=lmax_base,
-        n_samples=240000,
+        n_samples=5000000,
         mode="train",
         output_dir=data_dir,
         altitude=altitude
@@ -175,7 +171,7 @@ def main():
     generator_test = GravityDataGenerator(
         lmax_full=lmax_full,
         lmax_base=lmax_base,
-        n_samples=12000,
+        n_samples=250000,
         mode="test",
         output_dir=data_dir,
         altitude=altitude
