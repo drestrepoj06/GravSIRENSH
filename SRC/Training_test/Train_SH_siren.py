@@ -205,6 +205,8 @@ def main():
         devices=1,
         log_every_n_steps=1,
         num_sanity_val_steps=0,
+        gradient_clip_val=1.0,
+        gradient_clip_algorithm="norm",
         logger=wandb_logger
     )
 
