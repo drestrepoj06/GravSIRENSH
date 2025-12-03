@@ -214,7 +214,7 @@ def main():
     )
 
     trainer.fit(module, datamodule=datamodule)
-
+    actual_epochs = trainer.current_epoch
     model_path = os.path.join(run_dir, "model.pth")
     torch.save({
         "state_dict": module.model.state_dict(),
@@ -231,7 +231,8 @@ def main():
         "device": str(device),
         "mode": mode,
         "lr": lr,
-        "epochs": epochs,
+        "epochs_requested": epochs,
+        "epochs_trained": actual_epochs,
         "batch_size": batch_size,
         "lmax": lmax,
         "hidden_layers": hidden_layers,
@@ -251,7 +252,6 @@ def main():
     print(f"📝 Config saved at: {config_path}")
 
     data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_r0_test.parquet")
-
     if trainer.is_global_zero:
         print("Generating linear equivalent model...")
         gen = LinearEquivalentGenerator(run_dir, data_path)
@@ -288,6 +288,7 @@ def main():
 
             plotter.plot_map()
             plotter.plot_scatter()
+
 
 if __name__ == "__main__":
     import multiprocessing as mp
