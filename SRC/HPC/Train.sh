@@ -33,6 +33,6 @@ echo "Starting Train_SH_siren.py for mode=${mode} at $(date)"
 
 export WANDB_API_KEY="xxx"
 
-python Train_SH_siren.py --mode "${mode}"
+python Train_SH_network.py --mode "${mode}"
 
 echo "Finished mode=${mode} at $(date)"

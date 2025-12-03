@@ -11,8 +11,8 @@ import numpy as np
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.Location_encoder.SH_siren import SHSirenScaler, Gravity
-import SRC.Training_test.Test_SH_siren as test_script
+from SRC.Location_encoder.SH_network import Scaler, Gravity
+import SRC.Training_test.Test_SH_network as test_script
 from SRC.Visualizations.Geographic_plots import GravityDataPlotter
 from SRC.Linear.Linear_equivalent import LinearEquivalentGenerator
 
@@ -136,10 +136,10 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "g_indirect"
+    mode = "U"
     lr = 5e-3
     batch_size = 262144
-    lmax = 5
+    lmax = 3
     hidden_layers = 2
     hidden_features = 8
     first_omega_0 = 20
@@ -147,9 +147,10 @@ def main():
     exclude_degrees = None
     epochs = 1
     #warmup_U_epochs = 2000
+    arch = "sirensh"
 
     run_name = (
-        f"sh_siren_LR={lr}_mode={mode}_BS={batch_size}_"
+        f"{arch}_LR={lr}_mode={mode}_BS={batch_size}_"
         f"lmax={lmax}_layers={hidden_layers}_neurons={hidden_features}_"
         f"first_omega={first_omega_0}_hidden_omega={hidden_omega_0}_"
         f"exclude_degrees={exclude_degrees}"
@@ -157,7 +158,7 @@ def main():
     run_dir = os.path.join(base_dir, "Outputs", "Runs", run_name)
     os.makedirs(run_dir, exist_ok=True)
     print(f"🧩 Run directory: {run_dir}")
-    scaler = SHSirenScaler(mode=mode).fit(train_df)
+    scaler = Scaler(mode=mode).fit(train_df)
     model_cfg = dict(
         lmax=lmax,
         hidden_features=hidden_features,
@@ -168,8 +169,9 @@ def main():
         scaler=scaler,
         cache_path=os.path.join(base_dir, "Data", "cache_train.npy"),
         exclude_degrees=exclude_degrees,
-        mode=mode
+        mode=mode,
         #warmup_U_epochs = warmup_U_epochs
+        arch = arch
     )
 
     datamodule = GravityDataModule(train_df, val_df, scaler=scaler, mode=mode, batch_size=batch_size)
@@ -182,13 +184,13 @@ def main():
         log_model=False
     )
 
-    early_stop = EarlyStopping(
-        monitor="val_loss",
-        patience=10,      # number of epochs with no improvement
-        min_delta=1e-4,    # minimum improvement to count
-        mode="min",
-        verbose=True
-    )
+    # early_stop = EarlyStopping(
+    #     monitor="val_loss",
+    #     patience=10,      # number of epochs with no improvement
+    #     min_delta=1e-4,    # minimum improvement to count
+    #     mode="min",
+    #     verbose=True
+    # )
 
     # (optional) best checkpoint saving
     checkpoint = ModelCheckpoint(
@@ -201,7 +203,7 @@ def main():
     trainer = pl.Trainer(
         max_epochs=epochs,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
-        callbacks=[early_stop, checkpoint],
+        callbacks=[checkpoint],
         devices=1,
         log_every_n_steps=1,
         num_sanity_val_steps=0,
@@ -212,14 +214,25 @@ def main():
 
     trainer.fit(module, datamodule=datamodule)
     actual_epochs = trainer.current_epoch
+    best_path = checkpoint.best_model_path
+    ckpt = torch.load(best_path, map_location="cpu")
+
+    # Extract ONLY inner model weights
+    inner_state_dict = {
+        k[len("model."):]: v  # remove only the FIRST "model." prefix
+        for k, v in ckpt["state_dict"].items()
+        if k.startswith("model.")
+    }
+
+    # Save best model as model.pth
     model_path = os.path.join(run_dir, "model.pth")
     torch.save({
-        "state_dict": module.model.state_dict(),
+        "state_dict": inner_state_dict,
         "scaler": {
-            "U_mean": float(module.scaler.U_mean) if module.scaler.U_mean is not None else None,
-            "U_std": float(module.scaler.U_std) if module.scaler.U_std is not None else None,
-            "g_mean": module.scaler.g_mean.tolist() if module.scaler.g_mean is not None else None,
-            "g_std": module.scaler.g_std.tolist() if module.scaler.g_std is not None else None,
+            "U_mean": float(scaler.U_mean) if scaler.U_mean is not None else None,
+            "U_std": float(scaler.U_std) if scaler.U_std is not None else None,
+            "g_mean": scaler.g_mean.tolist() if scaler.g_mean is not None else None,
+            "g_std": scaler.g_std.tolist() if scaler.g_std is not None else None,
         }
     }, model_path)
 
@@ -238,7 +251,8 @@ def main():
         "hidden_omega_0": hidden_omega_0,
         "exclude_degrees": exclude_degrees,
         "train_samples": len(train_df),
-        "val_samples": len(val_df)
+        "val_samples": len(val_df),
+        "architecture": arch
     }
 
     config_path = os.path.join(run_dir, "config.json")

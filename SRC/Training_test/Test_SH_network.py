@@ -9,7 +9,7 @@ from datetime import datetime
 import multiprocessing as mp
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.Location_encoder.SH_siren import SH_SIREN, SHSirenScaler
+from SRC.Location_encoder.SH_network import SH_SIREN, SH_LINEAR, Scaler
 
 
 def main(run_path=None):
@@ -55,7 +55,7 @@ def main(run_path=None):
     print(f"🧩 Loaded config: mode={mode}, lmax={config['lmax']}")
 
     scaler_data = checkpoint["scaler"]
-    scaler = SHSirenScaler(mode=mode)
+    scaler = Scaler(mode=mode)
     scaler.U_mean = scaler_data.get("U_mean")
     scaler.U_std = scaler_data.get("U_std")
 
@@ -67,26 +67,35 @@ def main(run_path=None):
     if g_std is not None:
         scaler.g_std = torch.tensor(g_std, dtype=torch.float32, device=device)
 
-    # === Initialize model ===
     cache_path = os.path.join(base_dir, "Data", "cache_test.npy")
-    model = SH_SIREN(
+    arch = config["architecture"]
+
+    if arch == "sirensh":
+        ModelClass = SH_SIREN
+    elif arch == "linearsh":
+        ModelClass = SH_LINEAR
+    else:
+        raise ValueError(f"Unknown architecture '{arch}'. Expected 'sirensh' or 'linearsh'.")
+
+    # Instantiate the correct model
+    model = ModelClass(
         lmax=config["lmax"],
         hidden_features=config["hidden_features"],
         hidden_layers=config["hidden_layers"],
-        first_omega_0=config["first_omega_0"],
-        hidden_omega_0=config["hidden_omega_0"],
+        first_omega_0=config.get("first_omega_0"),  # None for SH_LINEAR (ignored)
+        hidden_omega_0=config.get("hidden_omega_0"),  # None for SH_LINEAR (ignored)
         device=device,
         scaler=scaler,
         cache_path=cache_path,
         exclude_degrees=config.get("exclude_degrees"),
         mode=mode,
     )
+
     model.load_state_dict(checkpoint["state_dict"])
     model.to(device)
     model.eval()
     print("✅ Model and scaler loaded successfully.")
 
-    # === Prepare test inputs ===
     lon = torch.tensor(test_df["lon"].values, dtype=torch.float32, device=device)
     lat = torch.tensor(test_df["lat"].values, dtype=torch.float32, device=device)
 
@@ -271,7 +280,6 @@ def main(run_path=None):
     torch.cuda.synchronize() if device.type == "cuda" else None
     print(f"⏱️ Inference done in {time.time() - start:.1f}s")
 
-    # === Convert to NumPy ===
     if mse_U is not None:
         U_pred_np = U_pred.detach().cpu().numpy().ravel()
     else:
@@ -291,7 +299,6 @@ def main(run_path=None):
         g_phi_grad_np = None
         g_mag_grad_np = None
 
-    # === Save predictions inside the same run folder ===
     prefix = os.path.join(latest_run, "test_results")
 
     if U_pred_np is not None:
@@ -346,50 +353,102 @@ def main(run_path=None):
 
     # === Linear baseline stats ===
     linear_paths = {
-        "model_lmax": os.path.join(run_path, "linear_g_mag_model.npy"),
-        "L_equiv": os.path.join(run_path, "linear_g_mag_equiv.npy"),
+        "U_model": {
+            "U": os.path.join(run_path, "linear_U_model.npy")
+        },
+        "U_equiv": {
+            "U": os.path.join(run_path, "linear_U_equiv.npy")
+        },
+        "g_model": {
+            "theta": os.path.join(run_path, "linear_g_theta_model.npy"),
+            "phi": os.path.join(run_path, "linear_g_phi_model.npy")
+        },
+        "g_equiv": {
+            "theta": os.path.join(run_path, "linear_g_theta_equiv.npy"),
+            "phi": os.path.join(run_path, "linear_g_phi_equiv.npy")
+        }
     }
 
-    mse_linear = None
-    linear_stats = None
+    linear_results = {}
+    mse_linear = {}
 
-    linear_results = {}  # To store stats for both linear models
-    mse_linear = {}  # Separate MSE for both linear baselines
+    for label, paths in linear_paths.items():
 
-    for label, path in linear_paths.items():
-        if os.path.exists(path):
-            lin_vals = np.load(path)
+        if "U" in paths:
+            U_path = paths["U"]
 
-            # Match sample size
-            if len(lin_vals) != len(true_mag):
-                print(f"⚠ Length mismatch in {label}: skipping")
+            if not os.path.exists(U_path):
+                print(f"⚠ Missing potential baseline for {label}")
                 continue
 
-            # Compute stats
-            linear_results[label] = stats(lin_vals)
-            mse_linear[label] = float(np.mean((lin_vals - true_mag) ** 2))
+            lin_U = np.load(U_path)
 
-            print(f"✔ Loaded linear baseline '{label}' from {path}")
-        else:
-            print(f"⚠ Linear baseline not found at {path}")
+            if len(lin_U) != len(true_U):
+                print(f"⚠ Length mismatch in potential baseline {label}")
+                continue
 
-    # === Final META ===
+            mse = float(np.mean((lin_U - true_U) ** 2))
+            mse_linear[label] = mse
+
+            linear_results[label] = {
+                "U": stats(lin_U)
+            }
+
+            print(f"✔ Loaded linear potential: {label} → MSE={mse:.3e}")
+            continue
+
+        theta_path = paths["theta"]
+        phi_path = paths["phi"]
+
+        if not (os.path.exists(theta_path) and os.path.exists(phi_path)):
+            print(f"⚠ Missing gravity component files for {label}")
+            continue
+
+        lin_theta = np.load(theta_path)
+        lin_phi = np.load(phi_path)
+
+        if len(lin_theta) != len(true_theta):
+            print(f"⚠ Length mismatch in gravity baseline {label}")
+            continue
+
+        mse_theta = np.mean((lin_theta - true_theta) ** 2)
+        mse_phi = np.mean((lin_phi - true_phi) ** 2)
+
+        mse_total = float(mse_theta + mse_phi)
+        mse_linear[label] = mse_total
+
+        linear_results[label] = {
+            "theta": stats(lin_theta),
+            "phi": stats(lin_phi)
+        }
+
+        print(f"✔ Loaded linear gravity: {label} → MSE={mse_total:.3e}")
+
     meta = {
         "mode": mode,
         "samples": len(test_df),
+
+        # NN MSEs
         "mse_U": float(mse_U) if mse_U is not None else None,
         "mse_g": float(mse_g),
         "mse_grad": float(mse_grad) if mse_grad is not None else None,
         "mse_consistency": float(mse_consistency) if mse_consistency is not None else None,
-        "mse_linear": mse_linear,   # now a dict with two values
+
+        # Linear baselines: dictionary with 4 entries
+        "mse_linear": mse_linear,  # { "U_model": ..., "U_equiv": ..., "g_model": ..., "g_equiv": ... }
+
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+
         "stats": {
             "pred": pred_stats,
             "true": true_stats,
-            "linear_model_lmax": linear_results.get("model_lmax"),
-            "linear_L_equiv":    linear_results.get("L_equiv"),
-        },
 
+            # These match linear_results dict produced earlier
+            "linear_U_model": linear_results.get("U_model"),
+            "linear_U_equiv": linear_results.get("U_equiv"),
+            "linear_g_model": linear_results.get("g_model"),
+            "linear_g_equiv": linear_results.get("g_equiv"),
+        },
     }
 
     meta_file = f"{prefix}_report.json"
