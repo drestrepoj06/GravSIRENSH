@@ -12,7 +12,7 @@ class LinearEquivalentGenerator:
     """
       • Computes L_equiv from NN parameter count and builds linear residual SH model (full − l=2)
       • Computes Lmax from the same lmax used in the embedding
-      • Saves g_r, g_theta, g_phi, g_mag as .npy
+      • Saves dU, g_r, g_theta, g_phi, g_mag as .npy
       • Stores all results in the object
     """
 

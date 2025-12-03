@@ -131,9 +131,9 @@ class GravityDataPlotter:
 
     def _find_predictions_file(self):
         patterns = {
-            "potential": "test_results*_U.npy",
-            "acceleration": "test_results*_mag.npy",
-            "gradients": "test_results*_g_mag_grad.npy",
+            "potential": "test_results_A*_U.npy",
+            "acceleration": "test_results_A*_mag.npy",
+            "gradients": "test_results_A*_g_mag_grad.npy",
         }
 
         if self.target_type not in patterns:
