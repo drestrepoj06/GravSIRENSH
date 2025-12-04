@@ -13,14 +13,17 @@ import glob
 
 class GravityDataPlotter:
     def __init__(
-        self,
-        data_path,
-        output_dir=None,
-        predictions_dir=None,
-        linear_dir=None,
-        linear_type="mag",
-        target_type="acceleration"
+            self,
+            data_path,
+            output_dir=None,
+            predictions_dir=None,
+            linear_dir=None,
+            linear_type="mag",
+            target_type="acceleration"
     ):
+        # --------------------------
+        # Basic assignments
+        # --------------------------
         self.data_path = data_path
         self.output_dir = output_dir
         self.predictions_dir = predictions_dir
@@ -28,12 +31,20 @@ class GravityDataPlotter:
         self.linear_type = linear_type
         self.target_type = target_type.lower()
 
+        # --------------------------
+        # Load test dataframe
+        # --------------------------
         self.sample_df = pd.read_parquet(data_path)
         self.filename = os.path.basename(data_path)
+
+        # Apply latitude mask (same as test script)
         if "lat" in self.sample_df.columns:
             mask = np.abs(self.sample_df["lat"].values) < 89.9999
             self.sample_df = self.sample_df[mask].reset_index(drop=True)
 
+        # --------------------------
+        # Output directory
+        # --------------------------
         if self.output_dir is None:
             base_dir = os.path.abspath(
                 os.path.join(os.path.dirname(data_path), "..", "Outputs", "Figures")
@@ -43,25 +54,64 @@ class GravityDataPlotter:
         else:
             os.makedirs(self.output_dir, exist_ok=True)
 
-        # Predictions_dir defaults to output_dir
+        # --------------------------
+        # Predictions_dir default
+        # --------------------------
         if self.predictions_dir is None:
             self.predictions_dir = self.output_dir
 
-        self.has_predictions = False
-        self.preds_path = self._find_predictions_file()
-        if self.preds_path:
-            self._load_predictions()
+        # --------------------------
+        # Parse filename for metadata
+        # --------------------------
+        self.lmax, self.lmax_base, self.n_samples, self.altitude, self.mode = \
+            self._parse_filename(self.filename)
 
+        # --------------------------
+        # Load NN predictions
+        # --------------------------
+        self.pred_files = self._find_predictions_file()  # <-- returns dict {"A":path, ...}
+        self.nn_preds = {}  # filled below
+        self.nn_errors = {}
+
+        # Construct subset dataframes BEFORE loading predictions
+        self._build_subset_dataframes()  # <-- NEW helper
+
+        if self.pred_files:
+            self._load_predictions()
+            self.has_predictions = True
+        else:
+            self.has_predictions = False
+
+        # --------------------------
+        # Load linear predictions
+        # --------------------------
         self.linear_available = False
+        self.linear_preds = {"model": {}, "equiv": {}}
+
         if self.linear_dir is not None:
             self._load_linear_predictions()
 
-        self.lmax, self.lmax_base, self.n_samples, self.altitude, self.mode = self._parse_filename(self.filename)
+    def _build_subset_dataframes(self):
 
-        self.preds_path = self._find_predictions_file()
-        self.has_predictions = False
-        if self.preds_path:
-            self._load_predictions()
+        # Build subsets based on true gravity (as in test script)
+        df = self.sample_df
+
+        g = df["dg_total_mGal"].values
+        mean_g = g.mean()
+        std_g = g.std()
+
+        mask_F = np.abs(g - mean_g) > 2 * std_g
+        mask_C = ~mask_F
+
+        self.A_idx = np.arange(len(df))
+        self.F_idx = np.where(mask_F)[0]
+        self.C_idx = np.where(mask_C)[0]
+
+        self.sample_df_subset = {
+            "A": df.iloc[self.A_idx].reset_index(drop=True),
+            "F": df.iloc[self.F_idx].reset_index(drop=True),
+            "C": df.iloc[self.C_idx].reset_index(drop=True),
+        }
 
     def _fname_suffix(self):
         """Suffix used in filenames: includes Lmax, base (if any), and ΔL."""
@@ -70,39 +120,55 @@ class GravityDataPlotter:
         return f"L{self.lmax}-{self.lmax_base}"
 
     def _load_linear_predictions(self):
-        """Loads linear predictions for both model-lmax and L_equiv."""
-        component = "mag" if self.target_type == "acceleration" else "U"
+        """Load linear predictions for A/F/C for both model-lmax and L_equiv."""
 
+        component = "mag" if self.target_type == "acceleration" else "U"
         fname_base = f"linear_g_{component}" if component != "U" else "linear_U"
 
-        # Paths
-        path_model = os.path.join(self.linear_dir, f"{fname_base}_model.npy")
-        path_equiv = os.path.join(self.linear_dir, f"{fname_base}_equiv.npy")
-
+        self.linear_preds = {"model": {}, "equiv": {}}
         self.linear_available = False
 
-        # Load model-lmax predictions
-        if os.path.exists(path_model):
-            linear_model = np.load(path_model)
-            if len(linear_model) == len(self.sample_df):
-                self.sample_df["linear_pred_model"] = linear_model
-                self.linear_available = True
-                print(f"✔ Loaded linear (model-lmax) from {path_model}")
-            else:
-                print("⚠️ linear_model length mismatch — skipping")
+        # Ensure subset DataFrames exist
+        if not hasattr(self, "sample_df_subset"):
+            raise RuntimeError("sample_df_subset must be defined before calling _load_linear_predictions().")
 
-        # Load L_equiv predictions
-        if os.path.exists(path_equiv):
-            linear_equiv = np.load(path_equiv)
-            if len(linear_equiv) == len(self.sample_df):
-                self.sample_df["linear_pred_equiv"] = linear_equiv
-                self.linear_available = True
-                print(f"✔ Loaded linear (L_equiv) from {path_equiv}")
-            else:
-                print("⚠️ linear_equiv length mismatch — skipping")
+        for subset in ["A", "F", "C"]:
+
+            # ----------------------------------------
+            # MODEL-LMAX FILE
+            # ----------------------------------------
+            path_model = os.path.join(self.linear_dir, f"{fname_base}_{subset}_model.npy")
+
+            if os.path.exists(path_model):
+                arr = np.load(path_model)
+
+                df_subset = self.sample_df_subset[subset]
+
+                if len(arr) == len(df_subset):
+                    self.linear_preds["model"][subset] = arr
+                    self.linear_available = True
+                else:
+                    print(
+                        f"⚠ Length mismatch for {subset} model-lmax: file={len(arr)}, df={len(df_subset)} — skipping.")
+
+            # ----------------------------------------
+            # L_EQUIV FILE
+            # ----------------------------------------
+            path_equiv = os.path.join(self.linear_dir, f"{fname_base}_{subset}_equiv.npy")
+
+            if os.path.exists(path_equiv):
+                arr = np.load(path_equiv)
+
+                df_subset = self.sample_df_subset[subset]
+
+                if len(arr) == len(df_subset):
+                    self.linear_preds["equiv"][subset] = arr
+                    self.linear_available = True
+                else:
+                    print(f"⚠ Length mismatch for {subset} L_equiv: file={len(arr)}, df={len(df_subset)} — skipping.")
 
         if not self.linear_available:
-            print("⚠️ No linear predictions available.")
+            print("⚠ No linear predictions available.")
 
     def _parse_filename(self, filename):
         name = filename.replace(".parquet", "")
@@ -131,64 +197,92 @@ class GravityDataPlotter:
 
     def _find_predictions_file(self):
         patterns = {
-            "potential": "test_results_A*_U.npy",
-            "acceleration": "test_results_A*_mag.npy",
-            "gradients": "test_results_A*_g_mag_grad.npy",
+            "potential": "test_results_{subset}_U.npy",
+            "acceleration": "test_results_{subset}_*_mag.npy",
+            "gradients": "test_results_{subset}_*_g_mag_grad.npy",
         }
 
         if self.target_type not in patterns:
             raise ValueError(f"Unknown target_type: {self.target_type}")
 
-        pattern = os.path.join(self.predictions_dir, patterns[self.target_type])
-        matches = glob.glob(pattern)
+        subset_results = {}
 
-        if matches:
-            latest = max(matches, key=os.path.getmtime)
-            print(f"Found predictions file for '{self.target_type}': {os.path.basename(latest)}")
-            return latest
+        for subset in ["A", "F", "C"]:
+            pattern = os.path.join(
+                self.predictions_dir,
+                patterns[self.target_type].format(subset=subset)
+            )
+            matches = glob.glob(pattern)
 
-        print(f"No predictions file found for target '{self.target_type}' in {self.predictions_dir}")
-        return None
+            if matches:
+                latest = max(matches, key=os.path.getmtime)
+                subset_results[subset] = latest
+            else:
+                print(f"⚠ No predictions found for subset {subset}")
+
+        if not subset_results:
+            print(f"⚠ No predictions files found for target '{self.target_type}' in {self.predictions_dir}")
+            return None
+
+        # store for later use in _load_predictions
+        self.pred_files = subset_results
+        return subset_results
 
     def _load_predictions(self):
-        preds = np.load(self.preds_path)
-
-        if len(preds) != len(self.sample_df):
-            print("⚠️ Prediction file length does not match test data. Skipping plot.")
+        if not hasattr(self, "pred_files") or not self.pred_files:
+            print("⚠ No prediction files loaded — skipping.")
             return
 
-        # ACCELERATION (scalar)
+        # Container for predictions per subset
+        self.nn_preds = {}  # NN predictions
+        self.nn_errors = {}  # errors per subset
+
+        # True value column for each target type
         if self.target_type == "acceleration":
             true_col = "dg_total_mGal"
             pred_col = "predicted_dg_total_mGal"
-
-            self.sample_df[pred_col] = preds
-            self.sample_df["error_mGal"] = preds - self.sample_df[true_col]
-
-        # POTENTIAL (scalar)
         elif self.target_type == "potential":
             true_col = "dU_m2_s2"
             pred_col = "predicted_dU_m2_s2"
-
-            self.sample_df[pred_col] = preds
-            self.sample_df["error_m2s2"] = preds - self.sample_df[true_col]
-
-        # GRADIENTS (scalar magnitude only)
         elif self.target_type == "gradients":
             true_col = "dg_total_mGal"
             pred_col = "predicted_g_mag_mGal"
-
-            # preds is shape (N,) — just the magnitude
-            self.sample_df[pred_col] = preds
-            self.sample_df["error_mGal"] = preds - self.sample_df[true_col]
-
-            print("ℹ️ Loaded gradient-magnitude predictions (|g|). Compared with dg_total_mGal.")
-
         else:
             raise ValueError(f"Unknown target_type '{self.target_type}'")
 
+        # Ensure subset DataFrames exist
+        if not hasattr(self, "sample_df_subset"):
+            raise RuntimeError("sample_df_subset (A/F/C) must be created before calling _load_predictions().")
+
+        # =============================================
+        # Load predictions per subset
+        # =============================================
+        for subset, path in self.pred_files.items():
+            preds = np.load(path)
+
+            df_subset = self.sample_df_subset[subset]
+
+            if len(preds) != len(df_subset):
+                print(f"⚠ Length mismatch for subset {subset}: preds={len(preds)}, df={len(df_subset)} — skipping.")
+                continue
+
+            # Store predictions
+            self.nn_preds[subset] = preds
+
+            # Compute and store errors
+            true_vals = df_subset[true_col].to_numpy()
+            errors = preds - true_vals
+            self.nn_errors[subset] = errors
+
+            # Add columns into subset df
+            df_subset[pred_col] = preds
+
+            if self.target_type == "acceleration" or self.target_type == "gradients":
+                df_subset["error_mGal"] = errors
+            elif self.target_type == "potential":
+                df_subset["error_m2s2"] = errors
+
         self.has_predictions = True
-        print(f"✅ Loaded {len(preds):,} predictions for target '{self.target_type}'.")
 
     def _make_grid(self, value_col):
         lon_grid = np.linspace(0, 360, 720)
@@ -232,11 +326,23 @@ class GravityDataPlotter:
         output_filename = f"Map_{suffix}.png"
         output_path = os.path.join(self.output_dir, output_filename)
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        print(f"Figure saved: {output_path}")
         plt.close()
 
+    def _iter_subsets(self):
+        """Helper to iterate over subsets A/F/C."""
+        return ["A", "F", "C"]
+
     def plot_scatter(self, color_by=None, s=0.5, alpha=0.8, cmap="viridis"):
-        """Scatter plot of samples OR predicted vs true + predicted-only map + histogram."""
+        """
+        Subset-aware plotting:
+            - A (All)
+            - F (High-perturbation)
+            - C (Complement)
+
+        Generates maps + comparison + histograms per subset.
+        """
+
+        # Determine true/pred columns based on target type
         if self.target_type == "acceleration":
             true_col = "dg_total_mGal"
             pred_col = "predicted_dg_total_mGal"
@@ -244,238 +350,190 @@ class GravityDataPlotter:
             symbol = "Δg"
 
         elif self.target_type == "gradients":
-            # Default: use g_magnitude
             true_col = "dg_total_mGal"
             pred_col = "predicted_g_mag_mGal"
             unit = "mGal"
             symbol = "Δg"
 
-        else:  # potential
+        else:
             true_col = "dU_m2_s2"
             pred_col = "predicted_dU_m2_s2"
             unit = "m²/s²"
             symbol = "ΔU"
 
-        if not self.has_predictions:
+
+        # Loop through subsets
+        for subset in ["A", "F", "C"]:
+
+            df = self.sample_df_subset[subset]
+            # Directory for this subset
+            subset_dir = os.path.join(self.output_dir, f"Maps_{subset}")
+            os.makedirs(subset_dir, exist_ok=True)
+            # --------------------------------------------------------------
+            # CASE 1 — No predictions at all
+            # --------------------------------------------------------------
             plt.figure(figsize=(10, 5))
-            color_data = self.sample_df[color_by] if color_by in self.sample_df.columns else self.sample_df[true_col]
-            sc = plt.scatter(self.sample_df["lon"], self.sample_df["lat"], c=color_data, s=s, alpha=alpha, cmap=cmap)
+            color_data = df[color_by] if (color_by in df.columns) else df[true_col]
+
+            sc = plt.scatter(
+                df["lon"], df["lat"],
+                c=color_data, s=s, alpha=alpha, cmap=cmap
+            )
+
             plt.xlabel("Longitude (°)")
             plt.ylabel("Latitude (°)")
-            plt.title(f"Sample Distribution ({symbol}, Lmax={self.lmax})")
+            plt.title(f"Sample Distribution ({subset}) ({symbol}, Lmax={self.lmax})")
             plt.colorbar(sc, label=color_by or true_col)
             plt.tight_layout()
-            suffix = f"{self._fname_suffix()}_{self.mode}_{self.target_type[:3]}"
-            output_path = os.path.join(self.output_dir, f"Scatter_{suffix}.png")
-            plt.savefig(output_path, dpi=300, bbox_inches="tight")
-            print(f"Scatter figure saved: {output_path}")
+
+            out = os.path.join(subset_dir, f"Scatter_Samples_{subset}_{self.target_type}.png")
+            plt.savefig(out, dpi=300, bbox_inches="tight")
+            plt.close()  # go to next subset
+
+            # --------------------------------------------------------------
+            # CASE 2 — True vs NN Predicted
+            # --------------------------------------------------------------
+            df_true = df[true_col].to_numpy()
+            df_pred = df[pred_col].to_numpy()
+
+            # Side-by-side maps
+            fig, axes = plt.subplots(
+                1, 2, figsize=(12, 5),
+                subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)}
+            )
+
+            vmin = min(df_true.min(), df_pred.min())
+            vmax = max(df_true.max(), df_pred.max())
+
+            for ax, data, title in zip(
+                    axes,
+                    [df_true, df_pred],
+                    [f"True {symbol}", f"Predicted {symbol}"]):
+                sc = ax.scatter(df["lon"], df["lat"],
+                                c=data, s=s, alpha=alpha, cmap=cmap,
+                                transform=ccrs.PlateCarree(),
+                                vmin=vmin, vmax=vmax)
+
+                ax.set_global()
+                gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
+                gl.top_labels = False
+                gl.right_labels = False
+
+                cbar = plt.colorbar(sc, ax=ax, orientation="horizontal", pad=0.08)
+                cbar.set_label(unit)
+                ax.set_title(title)
+
+            out = os.path.join(subset_dir, f"Scatter_True_vs_Pred_{subset}_{self.target_type}.png")
+            plt.savefig(out, dpi=300, bbox_inches="tight")
             plt.close()
-            return
 
-        cols = [true_col, pred_col]
-        titles = [f"True {symbol}", f"Predicted {symbol}"]
+            # --------------------------------------------------------------
+            # Predicted-only scatter
+            # --------------------------------------------------------------
+            plt.figure(figsize=(10, 5))
+            ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180))
 
-        fig, axes = plt.subplots(1, 2, figsize=(12, 5),
-                                 subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)})
+            sc = ax.scatter(df["lon"], df["lat"],
+                            c=df_pred, s=s, alpha=alpha, cmap=cmap,
+                            transform=ccrs.PlateCarree())
 
-        vmin = min(self.sample_df[true_col].min(), self.sample_df[pred_col].min())
-        vmax = max(self.sample_df[true_col].max(), self.sample_df[pred_col].max())
-
-        for ax, col, title in zip(axes, cols, titles):
-            sc = ax.scatter(self.sample_df["lon"], self.sample_df["lat"],
-                            c=self.sample_df[col], s=s, alpha=alpha, cmap=cmap,
-                            transform=ccrs.PlateCarree(), vmin=vmin, vmax=vmax)
             ax.set_global()
             gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
             gl.top_labels = False
             gl.right_labels = False
-            gl.bottom_labels = True
-            gl.left_labels = True
-            cbar = plt.colorbar(sc, ax=ax, orientation="horizontal", pad=0.08, aspect=40)
+
+            cbar = plt.colorbar(sc, orientation="horizontal", pad=0.08)
             cbar.set_label(unit)
-            ax.set_title(title, fontsize=11, pad=10)
 
-        comp_suffix = f"{self._fname_suffix()}_{self.target_type}"
-        output_path = os.path.join(self.output_dir, f"Scatter_Comparison_{comp_suffix}.png")
-        plt.savefig(output_path, dpi=300, bbox_inches="tight")
-        print(f"Scatter comparison figure saved: {output_path}")
-        plt.close()
+            ax.set_title(f"Predicted {symbol} ({subset})")
+            out = os.path.join(subset_dir, f"Scatter_Pred_only_{subset}_{self.target_type}.png")
+            plt.savefig(out, dpi=300, bbox_inches="tight")
+            plt.close()
 
-        plt.figure(figsize=(10, 5))
-        ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180))
-        sc = ax.scatter(self.sample_df["lon"], self.sample_df["lat"],
-                        c=self.sample_df[pred_col], s=s, alpha=alpha, cmap=cmap,
-                        transform=ccrs.PlateCarree())
-        ax.set_global()
-        gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
-        gl.top_labels = False
-        gl.right_labels = False
-        gl.bottom_labels = True
-        gl.left_labels = True
-        cbar = plt.colorbar(sc, orientation="horizontal", pad=0.08, aspect=40)
-        cbar.set_label(unit)
-        ax.set_title(f"Predicted {symbol} (Data L{self.lmax}, {self.mode})", fontsize=11, pad=10)
+            # --------------------------------------------------------------
+            # Histogram: True vs Predicted
+            # --------------------------------------------------------------
+            plt.figure(figsize=(8, 5))
+            bins = min(50, max(10, len(np.unique(df_true)) // 4))
 
-        pred_only_suffix = f"{self._fname_suffix()}_{self.target_type}"
-        output_path_pred = os.path.join(self.output_dir, f"Scatter_Predicted_{pred_only_suffix}.png")
-        plt.savefig(output_path_pred, dpi=300, bbox_inches="tight")
-        print(f"Separate predictions figure saved: {output_path_pred}")
-        plt.close()
+            plt.hist(df_true, bins=bins, alpha=0.6, label="True", color="orange")
+            plt.hist(df_pred, bins=bins, alpha=0.6, label="Predicted", color="steelblue")
 
-        # --- Overlaid histogram: True vs Predicted ---
-        true_vals = self.sample_df[true_col].to_numpy()
-        pred_vals = self.sample_df[pred_col].to_numpy()
+            plt.xlabel(f"{symbol} ({unit})")
+            plt.ylabel("Frequency")
+            plt.title(f"Histogram {subset}: True vs Predicted {symbol}")
+            plt.legend()
+            plt.grid(True, linestyle="--", alpha=0.5)
 
-        combined_vals = np.concatenate([true_vals, pred_vals])
-        unique_vals = np.unique(combined_vals)
+            out = os.path.join(subset_dir, f"Histogram_True_vs_Pred_{subset}_{self.target_type}.png")
+            plt.savefig(out, dpi=300, bbox_inches="tight")
+            plt.close()
 
-        # Skip if constant or near-constant
-        data_range = combined_vals.max() - combined_vals.min()
-        if unique_vals.size <= 1 or data_range < 1e-9:
-            print("⚠️ Histogram skipped: not enough variation or range too small.")
-            return
+            # --------------------------------------------------------------
+            # Linear predictions (if available)
+            # --------------------------------------------------------------
+            if self.linear_available:
 
-        # Safe number of bins
-        num_bins = min(50, max(5, unique_vals.size // 5))  # safer bin rule
-        plt.figure(figsize=(8, 5))
+                for lin_label, lin_dict in [
+                    ("Model_lmax", self.linear_preds["model"]),
+                    ("L_equiv", self.linear_preds["equiv"])
+                ]:
 
-        true_1d = np.asarray(self.sample_df[true_col]).ravel()
-        pred_1d = np.asarray(self.sample_df[pred_col]).ravel()
+                    if subset not in lin_dict:
+                        continue
 
-        plt.hist(
-            true_1d,
-            bins=num_bins,
-            color="orange",
-            alpha=0.6,
-            edgecolor="black",
-            label=f"True {symbol}"
-        )
+                    lin_vals = lin_dict[subset]
 
-        plt.hist(
-            pred_1d,
-            bins=num_bins,
-            color="steelblue",
-            alpha=0.6,
-            edgecolor="black",
-            label=f"Predicted {symbol}"
-        )
+                    # Plot linear map
+                    plt.figure(figsize=(10, 5))
+                    ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180))
 
-        plt.xlabel(f"{symbol} ({unit})")
-        plt.ylabel("Frequency")
-        plt.title(f"Histogram: True vs Predicted {symbol}\n(Data L{self.lmax}, {self.mode})", fontsize=11)
-        plt.grid(True, linestyle="--", linewidth=0.5, alpha=0.7)
-        plt.legend()
-        plt.tight_layout()
+                    sc = ax.scatter(df["lon"], df["lat"],
+                                    c=lin_vals, s=s, alpha=alpha, cmap=cmap,
+                                    transform=ccrs.PlateCarree())
 
-        hist_overlay_suffix = f"{self._fname_suffix()}_{self.target_type}"
-        output_path_hist_overlay = os.path.join(
-            self.output_dir,
-            f"Histogram_True_vs_Predicted_{hist_overlay_suffix}.png"
-        )
-        plt.savefig(output_path_hist_overlay, dpi=300, bbox_inches="tight")
-        print(f"Overlaid histogram saved: {output_path_hist_overlay}")
-        plt.close()
-
-        if self.linear_available:
-            for label, col in [
-                ("Model lmax", "linear_pred_model"),
-                ("L_equiv", "linear_pred_equiv"),
-            ]:
-                if col not in self.sample_df:
-                    continue
-
-                plt.figure(figsize=(12, 5))
-                ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180))
-
-                sc = ax.scatter(
-                    self.sample_df["lon"],
-                    self.sample_df["lat"],
-                    c=self.sample_df[col],
-                    s=s, alpha=alpha, cmap=cmap,
-                    transform=ccrs.PlateCarree()
-                )
-
-                ax.set_global()
-                gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
-                gl.top_labels = gl.right_labels = False
-                gl.bottom_labels = gl.left_labels = True
-
-                cbar = plt.colorbar(sc, orientation="horizontal", pad=0.08, aspect=40)
-                cbar.set_label(unit)
-
-                ax.set_title(f"Linear Prediction ({label})", fontsize=11, pad=10)
-
-                fname_linear = os.path.join(
-                    self.output_dir,
-                    f"Scatter_Linear_{label}_{self._fname_suffix()}_{self.target_type}.png"
-                )
-                plt.savefig(fname_linear, dpi=300, bbox_inches="tight")
-                print(f"Saved: {fname_linear}")
-                plt.close()
-
-            for label, colname in [
-                ("Model_lmax", "linear_pred_model"),
-                ("L_equiv", "linear_pred_equiv"),
-            ]:
-
-                if colname not in self.sample_df:
-                    continue
-
-                fig, axes = plt.subplots(
-                    1, 2, figsize=(14, 5),
-                    subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)}
-                )
-
-                cols = [true_col, colname]
-                titles = ["Ground Truth", f"Linear ({label})"]
-
-                vmin_lin = self.sample_df[cols].min().min()
-                vmax_lin = self.sample_df[cols].max().max()
-
-                for ax, col, title in zip(axes, cols, titles):
-                    sc = ax.scatter(
-                        self.sample_df["lon"],
-                        self.sample_df["lat"],
-                        c=self.sample_df[col],
-                        s=s, alpha=alpha, cmap=cmap,
-                        transform=ccrs.PlateCarree(),
-                        vmin=vmin_lin, vmax=vmax_lin
-                    )
                     ax.set_global()
                     gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
-                    gl.top_labels = gl.right_labels = False
-                    gl.bottom_labels = gl.left_labels = True
+                    gl.top_labels = False
+                    gl.right_labels = False
 
-                    cbar = plt.colorbar(sc, ax=ax, orientation="horizontal", pad=0.08)
+                    cbar = plt.colorbar(sc, orientation="horizontal", pad=0.08)
                     cbar.set_label(unit)
-                    ax.set_title(title, fontsize=11, pad=10)
 
-                fname_compare = os.path.join(
-                    self.output_dir,
-                    f"Scatter_True_vs_Linear_{label}_{self._fname_suffix()}_{self.target_type}.png"
-                )
-                plt.savefig(fname_compare, dpi=300, bbox_inches="tight")
-                print(f"Saved True-vs-linear comparison: {fname_compare}")
-                plt.close()
+                    ax.set_title(f"Linear Prediction ({lin_label}) — {subset}")
+                    out = os.path.join(subset_dir, f"Linear_{lin_label}_{subset}_{self.target_type}.png")
+                    plt.savefig(out, dpi=300, bbox_inches="tight")
+                    plt.close()
 
-    @classmethod
-    def from_latest(cls, data_dir, output_dir=None, target_type="acceleration"):
-        pattern_train = os.path.join(data_dir, "Samples_*_train.parquet")
-        pattern_test = os.path.join(data_dir, "Samples_*_test.parquet")
-        train_files = sorted(glob.glob(pattern_train), key=os.path.getmtime, reverse=True)
-        test_files = sorted(glob.glob(pattern_test), key=os.path.getmtime, reverse=True)
-        if not train_files:
-            raise FileNotFoundError(f"No *_train.parquet found in {data_dir}")
-        if not test_files:
-            raise FileNotFoundError(f"No *_test.parquet found in {data_dir}")
+                    # True vs Linear comparison
+                    fig, axes = plt.subplots(
+                        1, 2, figsize=(12, 5),
+                        subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)}
+                    )
 
-        latest_train = train_files[0]
-        latest_test = test_files[0]
-        print(f"Found latest train file: {os.path.basename(latest_train)}")
-        print(f"Found latest test file:  {os.path.basename(latest_test)}")
+                    vmin_lin = min(df_true.min(), lin_vals.min())
+                    vmax_lin = max(df_true.max(), lin_vals.max())
 
-        train_plotter = cls(latest_train, output_dir, target_type=target_type)
-        train_plotter.has_predictions = False
-        test_plotter = cls(latest_test, output_dir, target_type=target_type)
-        return train_plotter, test_plotter
+                    for ax, arr, title in zip(
+                            axes,
+                            [df_true, lin_vals],
+                            ["True", f"Linear ({lin_label})"]):
+                        sc = ax.scatter(df["lon"], df["lat"],
+                                        c=arr, s=s, alpha=alpha, cmap=cmap,
+                                        transform=ccrs.PlateCarree(),
+                                        vmin=vmin_lin, vmax=vmax_lin)
+
+                        ax.set_global()
+                        gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
+                        gl.top_labels = False
+                        gl.right_labels = False
+
+                        cbar = plt.colorbar(sc, orientation="horizontal", pad=0.08)
+                        cbar.set_label(unit)
+                        ax.set_title(title)
+
+                    out = os.path.join(subset_dir, f"True_vs_Linear_{lin_label}_{subset}_{self.target_type}.png")
+                    plt.savefig(out, dpi=300, bbox_inches="tight")
+                    plt.close()
+
 

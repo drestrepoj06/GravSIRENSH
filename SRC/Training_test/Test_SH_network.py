@@ -1,7 +1,6 @@
 import os
 import sys
 import json
-import time
 import torch
 import numpy as np
 import pandas as pd
@@ -10,6 +9,7 @@ import multiprocessing as mp
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from SRC.Location_encoder.SH_network import SH_SIREN, SH_LINEAR, Scaler
+from SRC.Linear.Linear_equivalent import LinearEquivalentGenerator
 
 
 def main(run_path=None):
@@ -35,6 +35,9 @@ def main(run_path=None):
 
     F = A[mask_F].reset_index(drop=True)
     C = A[~mask_F].reset_index(drop=True)
+    A_idx = np.arange(len(A))
+    F_idx = np.where(mask_F)[0]
+    C_idx = np.where(~mask_F)[0]
 
     # === Find the latest run ===
     if run_path is not None:
@@ -124,154 +127,39 @@ def main(run_path=None):
     # C: complement
     lon_C, lat_C, U_C, theta_C, phi_C, mag_C = build_tensors_from_df(C, device)
 
-    print("⚙️ Running model inference...")
+    def evaluate_and_save_dataset(
+            model,
+            mode,
+            lon,
+            lat,
+            true_U,  # torch tensor or None
+            true_theta,  # torch tensor
+            true_phi,  # torch tensor
+            true_mag,  # torch tensor
+            scaler,
+            device,
+            latest_run,
+            prefix_tag,  # 'A', 'F', or 'C'
+    ):
+        """
+        Runs a SINGLE forward pass for the given subset (A, F, or C),
+        computes MSEs, saves predictions to .npy, and returns:
+            results:      dict with mse_U, mse_g, mse_grad, mse_consistency (some may be None)
+            pred_stats:   dict of stats for predicted fields
+            true_stats:   dict of stats for true fields
+        """
 
-    start = time.time()
-
-    def to_np(t):
-        """Detach and convert tensor to NumPy."""
-        return t.detach().cpu().numpy()
-
-    def evaluate_dataset(model, mode, lon, lat,
-                         true_U, true_theta, true_phi,
-                         scaler, device):
-
-        # All tensors must be on device
+        # --- Move to device ---
         lon = lon.to(device)
         lat = lat.to(device)
 
-        true_U = true_U.to(device) if true_U is not None else None
         true_theta = true_theta.to(device)
         true_phi = true_phi.to(device)
+        true_mag = true_mag.to(device)
 
-        # -----------------------------
-        # MODE: U
-        # -----------------------------
-        if mode == "U":
-            lon_req = lon.clone().detach().requires_grad_(True)
-            lat_req = lat.clone().detach().requires_grad_(True)
+        if true_U is not None:
+            true_U = true_U.to(device)
 
-            U_scaled, grads = model(lon_req, lat_req, return_gradients=True)
-            U_pred = scaler.unscale_potential(U_scaled).detach()
-
-            g_scaled = torch.stack(grads, dim=1)
-            g_phys = scaler.unscale_gravity(g_scaled).detach()
-
-            g_theta = g_phys[:, 0]
-            g_phi = g_phys[:, 1]
-
-            mse_U = torch.mean((U_pred.ravel() - true_U) ** 2).item()
-            mse_g = torch.mean((g_theta - true_theta) ** 2).item() + \
-                    torch.mean((g_phi - true_phi) ** 2).item()
-
-            return {
-                "mse_U": mse_U,
-                "mse_g": mse_g
-            }
-
-        # -----------------------------
-        # MODE: g_direct
-        # -----------------------------
-        elif mode == "g_direct":
-
-            preds = model(lon, lat).detach()
-            g_pred = scaler.unscale_gravity(preds)
-
-            g_theta = g_pred[:, 0]
-            g_phi = g_pred[:, 1]
-
-            mse_g = torch.mean((g_theta - true_theta) ** 2).item() + \
-                    torch.mean((g_phi - true_phi) ** 2).item()
-
-            return {
-                "mse_U": None,
-                "mse_g": mse_g
-            }
-
-        # -----------------------------
-        # MODE: g_indirect
-        # -----------------------------
-        elif mode == "g_indirect":
-
-            lon_req = lon.clone().detach().requires_grad_(True)
-            lat_req = lat.clone().detach().requires_grad_(True)
-
-            U_scaled, grads = model(lon_req, lat_req)
-            U_pred = scaler.unscale_potential(U_scaled).detach()
-
-            g_scaled = torch.stack(grads, dim=1)
-            g_phys = scaler.unscale_gravity(g_scaled).detach()
-
-            g_theta = g_phys[:, 0]
-            g_phi = g_phys[:, 1]
-
-            mse_U = torch.mean((U_pred.ravel() - true_U) ** 2).item()
-            mse_g = torch.mean((g_theta - true_theta) ** 2).item() + \
-                    torch.mean((g_phi - true_phi) ** 2).item()
-
-            return {
-                "mse_U": mse_U,
-                "mse_g": mse_g
-            }
-
-        # -----------------------------
-        # MODE: g_hybrid
-        # -----------------------------
-        elif mode == "g_hybrid":
-
-            out = model(lon, lat)
-
-            U_pred_scaled = out["U_pred"]
-            g_pred_scaled = out["g_pred"]
-            g_from_gradU_scaled = out["g_from_gradU"]
-
-            U_pred = scaler.unscale_potential(U_pred_scaled).detach()
-            g_pred = scaler.unscale_gravity(g_pred_scaled).detach()
-            g_from_gradU = scaler.unscale_gravity(g_from_gradU_scaled).detach()
-
-            g_theta = g_pred[:, 0]
-            g_phi = g_pred[:, 1]
-            g_theta_grad = g_from_gradU[:, 0]
-            g_phi_grad = g_from_gradU[:, 1]
-
-            mse_U = torch.mean((U_pred.ravel() - true_U) ** 2).item()
-
-            mse_g = torch.mean((g_theta - true_theta) ** 2).item() + \
-                    torch.mean((g_phi - true_phi) ** 2).item()
-
-            mse_grad = torch.mean((g_theta_grad - true_theta) ** 2).item() + \
-                       torch.mean((g_phi_grad - true_phi) ** 2).item()
-
-            mse_consistency = torch.mean((g_theta_grad - g_theta) ** 2).item() + \
-                              torch.mean((g_phi_grad - g_phi) ** 2).item()
-
-            return {
-                "mse_U": mse_U,
-                "mse_g": mse_g,
-                "mse_grad": mse_grad,
-                "mse_consistency": mse_consistency
-            }
-
-    def predict_and_save(model, mode, lon, lat,
-                         true_U, true_theta, true_phi, true_mag,
-                         scaler, device, latest_run,
-                         prefix_tag):
-        """
-        prefix_tag must be: 'A', 'F', or 'C'
-        """
-
-        # ===============================
-        # Run model evaluation (reuse previous function)
-        # ===============================
-        results = evaluate_dataset(
-            model, mode,
-            lon, lat,
-            true_U, true_theta, true_phi,
-            scaler, device
-        )
-
-        # Recompute predictions (this ensures output tensors exist)
-        # --------------------------------------------------------
         # MODE: U
         if mode == "U":
             lon_req = lon.clone().detach().requires_grad_(True)
@@ -287,10 +175,8 @@ def main(run_path=None):
             g_phi = g_phys[:, 1]
             g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
 
-            # Hybrid-only fields
-            g_theta_grad = None
-            g_phi_grad = None
-            g_mag_grad = None
+            # No separate gradient-based field in this mode
+            g_theta_grad = g_phi_grad = g_mag_grad = None
 
         # MODE: g_direct
         elif mode == "g_direct":
@@ -302,9 +188,7 @@ def main(run_path=None):
             g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
 
             U_pred = None
-            g_theta_grad = None
-            g_phi_grad = None
-            g_mag_grad = None
+            g_theta_grad = g_phi_grad = g_mag_grad = None
 
         # MODE: g_indirect
         elif mode == "g_indirect":
@@ -321,9 +205,7 @@ def main(run_path=None):
             g_phi = g_phys[:, 1]
             g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
 
-            g_theta_grad = None
-            g_phi_grad = None
-            g_mag_grad = None
+            g_theta_grad = g_phi_grad = g_mag_grad = None
 
         # MODE: g_hybrid
         elif mode == "g_hybrid":
@@ -341,9 +223,50 @@ def main(run_path=None):
             g_phi_grad = g_from_grad[:, 1]
             g_mag_grad = torch.sqrt(g_theta_grad ** 2 + g_phi_grad ** 2)
 
-        # ===============================
-        # Saving predictions
-        # ===============================
+        else:
+            raise ValueError(f"Unsupported mode: {mode}")
+
+        # ---------------------------------------------------------
+        # MSE computation (always from the SAME predictions)
+        # ---------------------------------------------------------
+        mse_U = None
+        mse_g = None
+        mse_grad = None
+        mse_consistency = None
+
+        # U error where available
+        if U_pred is not None and true_U is not None:
+            mse_U = torch.mean((U_pred.ravel() - true_U) ** 2).item()
+
+        # g error
+        if g_theta is not None and g_phi is not None:
+            mse_g = (
+                    torch.mean((g_theta - true_theta) ** 2).item()
+                    + torch.mean((g_phi - true_phi) ** 2).item()
+            )
+
+        # Hybrid-only metrics
+        if mode == "g_hybrid":
+            mse_grad = (
+                    torch.mean((g_theta_grad - true_theta) ** 2).item()
+                    + torch.mean((g_phi_grad - true_phi) ** 2).item()
+            )
+
+            mse_consistency = (
+                    torch.mean((g_theta_grad - g_theta) ** 2).item()
+                    + torch.mean((g_phi_grad - g_phi) ** 2).item()
+            )
+
+        results = {
+            "mse_U": mse_U,
+            "mse_g": mse_g,
+            "mse_grad": mse_grad,
+            "mse_consistency": mse_consistency,
+        }
+
+        # ---------------------------------------------------------
+        # Save predictions to .npy
+        # ---------------------------------------------------------
         prefix = os.path.join(latest_run, f"test_results_{prefix_tag}")
 
         # Save U
@@ -355,15 +278,15 @@ def main(run_path=None):
         np.save(f"{prefix}_g_phi.npy", g_phi.cpu().numpy())
         np.save(f"{prefix}_g_mag.npy", g_mag.cpu().numpy())
 
-        # Save gradient gravity if exists
+        # Save gradient gravity if exists (hybrid)
         if g_theta_grad is not None:
             np.save(f"{prefix}_g_theta_grad.npy", g_theta_grad.cpu().numpy())
             np.save(f"{prefix}_g_phi_grad.npy", g_phi_grad.cpu().numpy())
             np.save(f"{prefix}_g_mag_grad.npy", g_mag_grad.cpu().numpy())
 
-        # ===============================
+        # ---------------------------------------------------------
         # Stats helper
-        # ===============================
+        # ---------------------------------------------------------
         def stats(arr):
             return {
                 "min": float(arr.min()),
@@ -372,6 +295,7 @@ def main(run_path=None):
                 "std": float(arr.std()),
             }
 
+        # Pred stats
         pred_stats = {
             "g_theta": stats(g_theta.cpu().numpy()),
             "g_phi": stats(g_phi.cpu().numpy()),
@@ -390,16 +314,15 @@ def main(run_path=None):
         true_stats = {
             "g_theta": stats(true_theta.cpu().numpy()),
             "g_phi": stats(true_phi.cpu().numpy()),
-            "g_mag": stats(true_mag.cpu().numpy())
+            "g_mag": stats(true_mag.cpu().numpy()),
         }
 
         if true_U is not None:
             true_stats["U"] = stats(true_U.cpu().numpy())
 
-        # Return everything
         return results, pred_stats, true_stats
 
-    res_A, pred_A, true_A = predict_and_save(
+    res_A, pred_A, true_A = evaluate_and_save_dataset(
         model, mode,
         lon_A, lat_A,
         U_A, theta_A, phi_A, mag_A,
@@ -409,7 +332,7 @@ def main(run_path=None):
     )
 
     # F
-    res_F, pred_F, true_F = predict_and_save(
+    res_F, pred_F, true_F = evaluate_and_save_dataset(
         model, mode,
         lon_F, lat_F,
         U_F, theta_F, phi_F, mag_F,
@@ -419,7 +342,7 @@ def main(run_path=None):
     )
 
     # C
-    res_C, pred_C, true_C = predict_and_save(
+    res_C, pred_C, true_C = evaluate_and_save_dataset(
         model, mode,
         lon_C, lat_C,
         U_C, theta_C, phi_C, mag_C,
@@ -428,9 +351,38 @@ def main(run_path=None):
         prefix_tag="C"
     )
 
-    def evaluate_linear_baseline(label, paths,
-                                 true_U, true_theta, true_phi,
-                                 idx_subset):
+    gen = LinearEquivalentGenerator(run_path, test_path)
+
+    lin_model = gen.evaluate_on_test(
+        df_grid=gen.model["df_grid"],
+        dU_grid=gen.model["dU_grid"],
+        lats_grid=gen.model["lats"],
+        lons_grid=gen.model["lons"],
+        clm_full_g=gen.model["clm_full_g"],
+        clm_low_g=gen.model["clm_low_g"],
+        r0=gen.model["r0"],
+        L=gen.model["L"],
+        save=True,
+        label="model",
+        A_idx=A_idx, F_idx=F_idx, C_idx=C_idx
+    )
+
+    lin_equiv = gen.evaluate_on_test(
+        df_grid=gen.equiv["df_grid"],
+        dU_grid=gen.equiv["dU_grid"],
+        lats_grid=gen.equiv["lats"],
+        lons_grid=gen.equiv["lons"],
+        clm_full_g=gen.equiv["clm_full_g"],
+        clm_low_g=gen.equiv["clm_low_g"],
+        r0=gen.equiv["r0"],
+        L=gen.equiv["L"],
+        save=True,
+        label="equiv",
+        A_idx=A_idx, F_idx=F_idx, C_idx=C_idx
+    )
+
+    def evaluate_linear_baseline(paths, subset, run_path,
+                                 true_U, true_theta, true_phi):
 
         def stats(arr):
             return {
@@ -442,38 +394,28 @@ def main(run_path=None):
 
         subset_results = {}
 
-        # ==== Potential baseline ====
+        # Potential case
         if "U" in paths:
-            U_path = paths["U"]
-
+            U_path = os.path.join(run_path, paths["U"].format(subset=subset))
             if not os.path.exists(U_path):
                 return None
 
-            lin_U_full = np.load(U_path)
-
-            # Select subset
-            lin_U = lin_U_full[idx_subset]
-
+            lin_U = np.load(U_path)
             mse = float(np.mean((lin_U - true_U) ** 2))
 
             subset_results["mse_U"] = mse
             subset_results["stats"] = {"U": stats(lin_U)}
-
             return subset_results
 
-        # ==== Gravity baseline ====
-        theta_path = paths["theta"]
-        phi_path = paths["phi"]
+        # Gravity case
+        theta_path = os.path.join(run_path, paths["theta"].format(subset=subset))
+        phi_path = os.path.join(run_path, paths["phi"].format(subset=subset))
 
         if not (os.path.exists(theta_path) and os.path.exists(phi_path)):
             return None
 
-        lin_theta_full = np.load(theta_path)
-        lin_phi_full = np.load(phi_path)
-
-        # Select subset
-        lin_theta = lin_theta_full[idx_subset]
-        lin_phi = lin_phi_full[idx_subset]
+        lin_theta = np.load(theta_path)
+        lin_phi = np.load(phi_path)
 
         mse_theta = np.mean((lin_theta - true_theta) ** 2)
         mse_phi = np.mean((lin_phi - true_phi) ** 2)
@@ -483,58 +425,54 @@ def main(run_path=None):
             "theta": stats(lin_theta),
             "phi": stats(lin_phi)
         }
-
         return subset_results
 
-    idx_A = np.arange(len(A))  # full set
-    idx_F = F.index.to_numpy()  # indices inside A
-    idx_C = C.index.to_numpy()  # complement indices
-    linear_paths = {"U_model": {"U": os.path.join(run_path, "linear_U_model.npy")},
-                    "U_equiv": {"U": os.path.join(run_path, "linear_U_equiv.npy")},
-                    "g_model": {"theta": os.path.join(run_path, "linear_g_theta_model.npy"),
-                                "phi": os.path.join(run_path, "linear_g_phi_model.npy")},
-                    "g_equiv": {"theta": os.path.join(run_path, "linear_g_theta_equiv.npy"),
-                                "phi": os.path.join(run_path, "linear_g_phi_equiv.npy")}}
-    linear_results = {}  # final dictionary for JSON output
+    linear_paths = {
+        "U_model": {"U": "linear_U_{subset}_model.npy"},
+        "U_equiv": {"U": "linear_U_{subset}_equiv.npy"},
+        "g_model": {"theta": "linear_g_theta_{subset}_model.npy",
+                    "phi": "linear_g_phi_{subset}_model.npy"},
+        "g_equiv": {"theta": "linear_g_theta_{subset}_equiv.npy",
+                    "phi": "linear_g_phi_{subset}_equiv.npy"},
+    }
+    linear_results = {}
 
     for label, paths in linear_paths.items():
         linear_results[label] = {}
 
-        # A — full
-        res_A = evaluate_linear_baseline(
-            label, paths,
+        # A
+        linear_results[label]["A"] = evaluate_linear_baseline(
+            paths=paths,
+            subset="A",
+            run_path=run_path,
             true_U=A["dU_m2_s2"].to_numpy() if "U" in paths else None,
             true_theta=A["dg_theta_mGal"].to_numpy(),
             true_phi=A["dg_phi_mGal"].to_numpy(),
-            idx_subset=idx_A
         )
-        if res_A is not None:
-            linear_results[label]["A"] = res_A
 
-        # F — high acceleration
-        res_F = evaluate_linear_baseline(
-            label, paths,
+        # F
+        linear_results[label]["F"] = evaluate_linear_baseline(
+            paths=paths,
+            subset="F",
+            run_path=run_path,
             true_U=F["dU_m2_s2"].to_numpy() if "U" in paths else None,
             true_theta=F["dg_theta_mGal"].to_numpy(),
             true_phi=F["dg_phi_mGal"].to_numpy(),
-            idx_subset=idx_F
         )
-        if res_F is not None:
-            linear_results[label]["F"] = res_F
 
-        # C — complement
-        res_C = evaluate_linear_baseline(
-            label, paths,
+        # C
+        linear_results[label]["C"] = evaluate_linear_baseline(
+            paths=paths,
+            subset="C",
+            run_path=run_path,
             true_U=C["dU_m2_s2"].to_numpy() if "U" in paths else None,
             true_theta=C["dg_theta_mGal"].to_numpy(),
             true_phi=C["dg_phi_mGal"].to_numpy(),
-            idx_subset=idx_C
         )
-        if res_C is not None:
-            linear_results[label]["C"] = res_C
 
     meta = {
         "mode": mode,
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
 
         # Number of samples in each dataset
         "samples": {
@@ -544,54 +482,25 @@ def main(run_path=None):
         },
 
         "nn": {
-            "A": res_A,
-            "F": res_F,
-            "C": res_C,
-        },
-
-        "linear": linear_results,
-
-        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-
-        "stats": {
-            "nn_pred": {
-                "A": pred_A,
-                "F": pred_F,
-                "C": pred_C,
+            "A": {
+                "mse": res_A,
+                "pred_stats": pred_A,
+                "true_stats": true_A
             },
-
-            # NN true stats
-            "nn_true": {
-                "A": true_A,
-                "F": true_F,
-                "C": true_C,
+            "F": {
+                "mse": res_F,
+                "pred_stats": pred_F,
+                "true_stats": true_F
             },
-
-            # Linear predicted stats
-            "linear_pred": {
-                "U_model": {
-                    "A": linear_results["U_model"]["A"]["stats"],
-                    "F": linear_results["U_model"]["F"]["stats"],
-                    "C": linear_results["U_model"]["C"]["stats"],
-                },
-                "U_equiv": {
-                    "A": linear_results["U_equiv"]["A"]["stats"],
-                    "F": linear_results["U_equiv"]["F"]["stats"],
-                    "C": linear_results["U_equiv"]["C"]["stats"],
-                },
-                "g_model": {
-                    "A": linear_results["g_model"]["A"]["stats"],
-                    "F": linear_results["g_model"]["F"]["stats"],
-                    "C": linear_results["g_model"]["C"]["stats"],
-                },
-                "g_equiv": {
-                    "A": linear_results["g_equiv"]["A"]["stats"],
-                    "F": linear_results["g_equiv"]["F"]["stats"],
-                    "C": linear_results["g_equiv"]["C"]["stats"],
-                }
+            "C": {
+                "mse": res_C,
+                "pred_stats": pred_C,
+                "true_stats": true_C
             }
-        }
+        },
+        "linear": linear_results,
     }
+
 
     meta_file = os.path.join(latest_run, "test_results_report.json")
 
