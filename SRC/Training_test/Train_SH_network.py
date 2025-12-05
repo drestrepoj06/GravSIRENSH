@@ -136,7 +136,7 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "U"
+    mode = "g_hybrid"
     lr = 5e-3
     batch_size = 262144
     lmax = 3

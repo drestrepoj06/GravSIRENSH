@@ -5,11 +5,12 @@ jhonr
 import os
 import numpy as np
 import pandas as pd
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.interpolate import griddata
 import cartopy.crs as ccrs
 import glob
-
 
 class GravityDataPlotter:
     def __init__(
@@ -199,7 +200,7 @@ class GravityDataPlotter:
         patterns = {
             "potential": "test_results_{subset}_U.npy",
             "acceleration": "test_results_{subset}_*_mag.npy",
-            "gradients": "test_results_{subset}_*_g_mag_grad.npy",
+            "gradients": "test_results_{subset}_g_mag_grad.npy",
         }
 
         if self.target_type not in patterns:
