@@ -1,4 +1,4 @@
-"""Standard implementation of a SIRENNET
+"""Implementation of SirenNET and LinearNet
 jhonr"""
 
 # From https://github.com/vsitzmann/siren/blob/master/explore_siren.ipynb
@@ -61,7 +61,6 @@ class LINEARNet(nn.Module):
         for _ in range(hidden_layers):
             layers.append(nn.Linear(hidden_features, hidden_features))
 
-        # Output layer
         layers.append(nn.Linear(hidden_features, out_features))
 
         self.model = nn.Sequential(*layers)
