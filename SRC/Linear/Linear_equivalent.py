@@ -1,4 +1,5 @@
-"""Equivalent pyshtools linear model to the nparams of the trained neural network
+"""Equivalent pyshtools linear model to the nparams of the trained neural network and with the same
+lmax of the embedding
 jhonr"""
 
 import json
@@ -22,7 +23,6 @@ class LinearEquivalentGenerator:
         self.data_path = data_path
         self.altitude = altitude
 
-        # Load config and derive L_equiv
         with open(os.path.join(run_dir, "config.json")) as f:
             self.config = json.load(f)
 
@@ -30,7 +30,6 @@ class LinearEquivalentGenerator:
         params = self.compute_siren_params(self.config)
         self.L_equiv = self.params_to_lmax(params)
 
-        # Generate model-lmax linear grids
         (
             df_grid_model, model_dU_grid, model_lats,
             model_lons, model_clm_full_g, model_clm_low_g, model_r0
@@ -47,7 +46,6 @@ class LinearEquivalentGenerator:
             "L": self.lmax
         }
 
-        # Generate L_equiv linear grids
         (
             df_grid_equiv, equiv_dU_grid, equiv_lats,
             equiv_lons, equiv_clm_full_g, equiv_clm_low_g, equiv_r0
@@ -66,7 +64,7 @@ class LinearEquivalentGenerator:
 
     @staticmethod
     def compute_siren_params(config):
-        lmax = config["lmax"]  # local variable, not self.lmax
+        lmax = config["lmax"]
         hidden = config["hidden_features"]
         layers = config["hidden_layers"]
 
@@ -146,7 +144,6 @@ class LinearEquivalentGenerator:
         dg_phi = gphi_full - gphi_low
         dg_total = np.sqrt(dg_theta ** 2 + dg_phi ** 2)
 
-        # Build dataframe
         lats = res_full.pot.lats()
         lons = res_full.pot.lons()
         lat_grid = np.repeat(lats, len(lons))
@@ -177,13 +174,11 @@ class LinearEquivalentGenerator:
             clm_low_g,
             r0,
             L,
-            A_idx, F_idx, C_idx,  # <- subsets passed from Test script
+            A_idx, F_idx, C_idx,
             save=True,
             label=""
     ):
-        # ================================================
-        # Load test coordinates (no subset selection here)
-        # ================================================
+
         df_test = pd.read_parquet(self.data_path)
         mask = np.abs(df_test["lat"].values) < 89.9999
         df_test = df_test[mask].reset_index(drop=True)
@@ -192,18 +187,12 @@ class LinearEquivalentGenerator:
         lon_f = df_test["lon"].values
         r_f = np.full_like(lat_f, r0)
 
-        # ================================================
-        # Interpolate dU on test coordinates
-        # ================================================
         interp = RegularGridInterpolator(
             (lats_grid, lons_grid), dU_grid,
             bounds_error=False, fill_value=None
         )
         dU = interp(np.column_stack((lat_f, lon_f))).astype("float32")
 
-        # ================================================
-        # Gravity prediction
-        # ================================================
         g_full = clm_full_g.expand(
             lat=lat_f.reshape(-1, 1),
             lon=lon_f.reshape(-1, 1),
@@ -226,9 +215,6 @@ class LinearEquivalentGenerator:
         g_phi = (g[:, 2] * 1e5).astype("float32")
         g_mag = np.sqrt(g_theta ** 2 + g_phi ** 2)
 
-        # ================================================
-        # Apply subsets
-        # ================================================
         subsets = {
             "A": A_idx,
             "F": F_idx,

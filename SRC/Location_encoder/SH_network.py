@@ -22,16 +22,11 @@ class Scaler:
     def __init__(self, mode="U", r_scale=6378136.6):
         self.mode = mode
         self.r_scale = r_scale
-
-        # Potential stats
         self.U_mean = None
         self.U_std  = None
-
-        # Gravity stats (if direct g training)
         self.g_mean = None
         self.g_std  = None
 
-    # === FITTING ===
     def fit(self, df):
         if self.mode in ["U", "g_indirect", "g_hybrid", "U_g_direct"]: #  "U_g_indirect", "U_g_hybrid"]:
             U = df["dU_m2_s2"].to_numpy()   # in m²/s²
@@ -46,7 +41,6 @@ class Scaler:
 
         return self
 
-    # === POTENTIAL ===
     def scale_potential(self, U):
         """Standardize U."""
         if self.U_mean is None:
@@ -57,7 +51,6 @@ class Scaler:
         """Inverse of standardization."""
         return U_scaled * self.U_std + self.U_mean
 
-    # === DIRECT GRAVITY ===
     def scale_gravity(self, g):
         """Standardize g (theta, phi)."""
         if self.g_mean is None:
@@ -68,7 +61,6 @@ class Scaler:
         """Inverse standardization."""
         return g_scaled * self.g_std + self.g_mean
 
-    # === INDIRECT GRAVITY (FROM POTENTIAL GRADS) ===
     # def unscale_acceleration_from_potential(self, grads, lat, r=None):
     #     """
     #     grads = (dU_dlon_scaled, dU_dlat_scaled, [dU_dr_scaled])
@@ -136,9 +128,9 @@ class SH_SIREN(nn.Module):
           - "U"              : predict potential only
           - "g_direct"       : predict gravity components directly
           - "g_indirect"     : predict potential and derive g = -∇U
+          - "g_hybrid"      : predict g directly and force the gradient of U to be equal to gpred
           - "U_g_direct"     : predict potential and g directly (multi-output)
           - "U_g_indirect"   : predict potential and derive g = -∇U
-          - "g_hybrid"      : predict g directly and force the gradient of U to be equal to gpred
           - "U_g_hybrid"    : predict U and g directly and force the gradient of U to be equal to gpred
         """
         super().__init__()
@@ -150,7 +142,6 @@ class SH_SIREN(nn.Module):
         self.out_features = int(out_features)
         self.cache_path = cache_path
 
-        # --- Embedding setup ---
         self.embedding = SHEmbedding(
             lmax=lmax,
             normalization=normalization,
@@ -160,13 +151,10 @@ class SH_SIREN(nn.Module):
             exclude_degrees=exclude_degrees
         )
 
-        # Only build LUT if we actually use SH (lmax > 0 and LUT enabled)
         if lmax > 0 and self.embedding.use_theta_lut:
             self.embedding.build_theta_lut()
 
-        # Figure out input dimensionality
         if lmax == 0:
-            # Raw normalized lon/lat → 2 features
             in_features = 2
         else:
             dummy_lon = torch.tensor([0.0])
@@ -174,13 +162,12 @@ class SH_SIREN(nn.Module):
             Y_dummy = self.embedding(dummy_lon, dummy_lat)
             in_features = Y_dummy.shape[1]
 
-        # --- Determine network output size ---
         if mode in ["U", "g_indirect"]:
             out_features = 1
         elif mode in ["g_direct"]:
-            out_features = 2  # (g_theta, g_phi)
+            out_features = 2
         elif mode in ["U_g_direct", "g_hybrid"]: # "U_g_indirect", "U_g_hybrid"]:
-            out_features = 3  # (U, g_theta, g_phi)
+            out_features = 3
         else:
             raise ValueError(f"Unknown mode '{mode}'")
 
@@ -195,9 +182,8 @@ class SH_SIREN(nn.Module):
 
     def forward(self, lon, lat, return_gradients=False, r=None):
         """
-        Forward pass supporting all 5 experimental configurations.
+        Forward pass supporting experimental configurations.
         """
-        # --- MODE 1: Potential only ---
         if self.mode == "U":
             if return_gradients:
                 with torch.set_grad_enabled(True):
@@ -220,13 +206,11 @@ class SH_SIREN(nn.Module):
                 outputs = self.siren(Y)
                 return outputs
 
-        # --- MODE 2: Gravity direct ---
         elif self.mode == "g_direct":
             Y = self.embedding(lon, lat).to(self.device)
             outputs = self.siren(Y)
-            return outputs  # (g_theta, g_phi)
+            return outputs
 
-        # --- MODE 3: Gravity indirect (from potential) ---
         elif self.mode == "g_indirect":
             with torch.set_grad_enabled(True):
                 lon = lon.to(self.device).requires_grad_(True)
@@ -270,14 +254,12 @@ class SH_SIREN(nn.Module):
                 g_theta_from_U = -grads[1]
                 g_phi_from_U = -grads[0]
 
-            # return predicted g, and computed g from ∇U
             return {
                 "U_pred": U_pred,
                 "g_pred": g_pred,
                 "g_from_gradU": torch.stack([g_theta_from_U, g_phi_from_U], dim=-1)
             }
 
-        # # --- MODE 5: U + g (direct) ---
         # elif self.mode == "U_g_direct":
         #     Y = self.embedding(lon, lat).to(self.device)
         #     outputs = self.siren(Y)
@@ -285,7 +267,6 @@ class SH_SIREN(nn.Module):
         #     g_pred = outputs[:, 1:]
         #     return U_pred, g_pred
 
-        # --- MODE 6: U + g (indirect) ---
         # elif self.mode == "U_g_indirect":
         #     if return_gradients:
         #         with torch.set_grad_enabled(True):
@@ -397,7 +378,7 @@ class SH_LINEAR(nn.Module):
         elif mode == "g_direct":
             out_dim = 2
         elif mode == "g_hybrid":
-            out_dim = 3  # (U, gθ, gφ)
+            out_dim = 3
         else:
             raise ValueError(f"Unknown mode '{mode}'")
 
@@ -582,25 +563,25 @@ class Gravity(pl.LightningModule):
 
             return loss
 
-        elif self.mode == "U_g_direct":
-            U_pred, g_pred = y_pred
-
-            U_true = y_true[:, :1]
-            g_true = y_true[:, 1:]
-
-            loss_U = self.criterion(U_pred, U_true)
-            loss_g = self.criterion(g_pred, g_true)
-
-            w_U = torch.sigmoid(self.log_sigma_U)
-            w_g = torch.sigmoid(self.log_sigma_g)
-
-            W = w_U + w_g
-            w_U = w_U / W
-            w_g = w_g / W
-
-            loss = w_U * loss_U + w_g * loss_g
-
-            return (loss_U, loss_g, None, None, loss) if return_components else loss
+        # elif self.mode == "U_g_direct":
+        #     U_pred, g_pred = y_pred
+        #
+        #     U_true = y_true[:, :1]
+        #     g_true = y_true[:, 1:]
+        #
+        #     loss_U = self.criterion(U_pred, U_true)
+        #     loss_g = self.criterion(g_pred, g_true)
+        #
+        #     w_U = torch.sigmoid(self.log_sigma_U)
+        #     w_g = torch.sigmoid(self.log_sigma_g)
+        #
+        #     W = w_U + w_g
+        #     w_U = w_U / W
+        #     w_g = w_g / W
+        #
+        #     loss = w_U * loss_U + w_g * loss_g
+        #
+        #     return (loss_U, loss_g, None, None, loss) if return_components else loss
 
         # elif self.mode == "U_g_indirect":
         #
@@ -694,20 +675,14 @@ class Gravity(pl.LightningModule):
 
         self.log("train_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True)
 
-        # Component names MUST match the returned structure:
-        # (loss_U, loss_g, loss_grad, loss_consistency, total_loss)
         component_names = ["U", "g", "grad", "consistency"]
-
-        # Iterate through U, g, grad, consistency (skip total_loss at the end)
         for name, comp in zip(component_names, loss_components[:-1]):
             if comp is not None:
                 if isinstance(comp, torch.Tensor) and comp.ndim > 0:
                     comp = comp.mean()
                 self.log(f"train_{name}_loss", comp, on_step=False, on_epoch=True)
 
-        # Log all sigmas
         #self._log_sigmas("train")
-        # Log current learning rate
         lr = self.trainer.optimizers[0].param_groups[0]['lr']
         self.log("lr", lr, on_step=False, on_epoch=True)
 
@@ -717,28 +692,22 @@ class Gravity(pl.LightningModule):
         lon_b, lat_b, y_true_b = [b.to(self.device) for b in batch]
         y_pred_b = self.model(lon_b, lat_b)
 
-        # Compute all loss components
         loss_components = self._compute_loss(y_pred_b, y_true_b, return_components=True)
 
-        # Last component is the total loss
         total_loss = loss_components[-1]
         if isinstance(total_loss, torch.Tensor) and total_loss.ndim > 0:
             total_loss = total_loss.mean()
 
-        # Log total validation loss
         self.log("val_loss", total_loss, on_epoch=True, prog_bar=True)
 
-        # Component names MUST match the returned structure
         component_names = ["U", "g", "grad", "consistency"]
 
-        # Log U, g, grad, consistency
         for name, comp in zip(component_names, loss_components[:-1]):
             if comp is not None:
                 if isinstance(comp, torch.Tensor) and comp.ndim > 0:
                     comp = comp.mean()
                 self.log(f"val_{name}_loss", comp, on_epoch=True)
 
-        # Log learned sigmas
         # self._log_sigmas("val")
 
         return total_loss
@@ -750,7 +719,7 @@ class Gravity(pl.LightningModule):
             optimizer,
             mode="min",
             factor=0.5,
-            patience=50,  # epochs with no val improvement
+            patience=50,
             min_lr=1e-6
         )
 

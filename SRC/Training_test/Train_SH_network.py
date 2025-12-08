@@ -1,3 +1,6 @@
+"""Training of a SIRENSH or LINEARSH neural network for the estimation of Earth's
+gravity field
+jhonr"""
 import os
 import sys
 import torch
@@ -23,9 +26,9 @@ class GravityDataset(torch.utils.data.Dataset):
           - "U"              : predict potential only
           - "g_direct"       : predict gravity components directly
           - "g_indirect"     : predict potential and derive g = -∇U
+          - "g_hybrid"      : predict g directly and force the gradient of U to be equal to gpred
           - "U_g_direct"     : predict potential and g directly (multi-output)
           - "U_g_indirect"   : predict potential and derive g = -∇U
-          - "g_hybrid"      : predict g directly and force the gradient of U to be equal to gpred
           - "U_g_hybrid"    : predict U and g directly and force the gradient of U to be equal to gpred
         """
         self.mode = mode
@@ -50,7 +53,6 @@ class GravityDataset(torch.utils.data.Dataset):
             g_scaled = self.scaler.scale_gravity(g_phys)
             self.y = torch.tensor(g_scaled, dtype=torch.float32)
 
-        # --- Indirect gravity (predict U, compare g = ∇U vs target g) ---
         elif mode == "g_indirect":
             cols = ["dg_theta_mGal", "dg_phi_mGal"]
             g_phys = df[cols].values
@@ -68,16 +70,14 @@ class GravityDataset(torch.utils.data.Dataset):
             y = np.column_stack([U_scaled, g_scaled])
             self.y = torch.tensor(y, dtype=torch.float32)
 
-        # --- U + g (direct multitask) ---
-        elif mode == "U_g_direct":
-            U_phys = df["dU_m2_s2"].values
-            g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
-            U_scaled = self.scaler.scale_potential(U_phys)
-            g_scaled = self.scaler.scale_gravity(g_phys)
-            y = np.column_stack([U_scaled, g_scaled])
-            self.y = torch.tensor(y, dtype=torch.float32)
+        # elif mode == "U_g_direct":
+        #     U_phys = df["dU_m2_s2"].values
+        #     g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
+        #     U_scaled = self.scaler.scale_potential(U_phys)
+        #     g_scaled = self.scaler.scale_gravity(g_phys)
+        #     y = np.column_stack([U_scaled, g_scaled])
+        #     self.y = torch.tensor(y, dtype=torch.float32)
 
-        # --- U + g (indirect multitask) ---
         # elif mode == "U_g_indirect":
         #     U_phys = df["dU_m2_s2"].values
         #     g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
@@ -86,7 +86,6 @@ class GravityDataset(torch.utils.data.Dataset):
         #     y = np.column_stack([U_scaled, g_scaled])
         #     self.y = torch.tensor(y, dtype=torch.float32)
 
-        # elif mode == "U_g_hybrid":
         #     U_phys = df["dU_m2_s2"].values
         #     g_phys = df[["dg_theta_mGal", "dg_phi_mGal"]].values
         #     U_scaled = self.scaler.scale_potential(U_phys)
@@ -128,7 +127,6 @@ def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
     data_path = os.path.join(base_dir, 'Data', 'Samples_2190-2_5.0M_r0_train.parquet')
 
-    print("📂 Loading dataset...")
     df = pd.read_parquet(data_path)
     val_df = df.sample(n=500_000, random_state=42)
     train_df = df.drop(val_df.index)
@@ -157,7 +155,7 @@ def main():
     )
     run_dir = os.path.join(base_dir, "Outputs", "Runs", run_name)
     os.makedirs(run_dir, exist_ok=True)
-    print(f"🧩 Run directory: {run_dir}")
+    print(f"Run directory: {run_dir}")
     scaler = Scaler(mode=mode).fit(train_df)
     model_cfg = dict(
         lmax=lmax,
@@ -179,7 +177,7 @@ def main():
     pl.seed_everything(42, workers=True)
 
     wandb_logger = WandbLogger(
-        project="grav_siren",
+        project="siren",
         name=run_name,
         log_model=False
     )
@@ -217,14 +215,12 @@ def main():
     best_path = checkpoint.best_model_path
     ckpt = torch.load(best_path, map_location="cpu")
 
-    # Extract ONLY inner model weights
     inner_state_dict = {
-        k[len("model."):]: v  # remove only the FIRST "model." prefix
+        k[len("model."):]: v
         for k, v in ckpt["state_dict"].items()
         if k.startswith("model.")
     }
 
-    # Save best model as model.pth
     model_path = os.path.join(run_dir, "model.pth")
     torch.save({
         "state_dict": inner_state_dict,
@@ -259,8 +255,8 @@ def main():
     with open(config_path, "w") as f:
         json.dump(config, f, indent=4)
 
-    print(f"\n✅ Model saved at: {model_path}")
-    print(f"📝 Config saved at: {config_path}")
+    print(f"\nModel saved at: {model_path}")
+    print(f"Config saved at: {config_path}")
 
     data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_r0_test.parquet")
     test_script.main(run_path=run_dir)
@@ -281,7 +277,7 @@ def main():
         print(f"⚠️ Mode '{mode}' not recognized for plotting.")
     else:
         for target in targets_to_plot:
-            print(f"📡 Plotting {target} maps...")
+            print(f"Plotting {target} maps...")
 
             plotter = GravityDataPlotter(
                 data_path=data_path,

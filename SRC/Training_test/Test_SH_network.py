@@ -16,10 +16,7 @@ def main(run_path=None):
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
     runs_dir = os.path.join(base_dir, "Outputs", "Runs")
     data_dir = os.path.join(base_dir, "Data")
-    mse_consistency = None
-    mse_grad = None
 
-    # === Load test dataset ===
     test_path = os.path.join(data_dir, "Samples_2190-2_250k_r0_test.parquet")
     test_df = pd.read_parquet(test_path)
 
@@ -39,31 +36,29 @@ def main(run_path=None):
     F_idx = np.where(mask_F)[0]
     C_idx = np.where(~mask_F)[0]
 
-    # === Find the latest run ===
     if run_path is not None:
         latest_run = run_path
     else:
         run_dirs = [os.path.join(runs_dir, d) for d in os.listdir(runs_dir)
                     if os.path.isdir(os.path.join(runs_dir, d))]
         if not run_dirs:
-            raise FileNotFoundError("❌ No run directories found in Outputs/Runs")
+            raise FileNotFoundError("No run directories found in Outputs/Runs")
         latest_run = max(run_dirs, key=os.path.getmtime)
-    print(f"📂 Using latest run: {os.path.basename(latest_run)}")
+    print(f"Using latest run: {os.path.basename(latest_run)}")
 
     model_path = os.path.join(latest_run, "model.pth")
     config_path = os.path.join(latest_run, "config.json")
 
     if not os.path.exists(model_path) or not os.path.exists(config_path):
-        raise FileNotFoundError("❌ Missing model.pth or config.json in run folder")
+        raise FileNotFoundError("Missing model.pth or config.json in run folder")
 
-    # === Load config and checkpoint ===
     with open(config_path, "r") as f:
         config = json.load(f)
     checkpoint = torch.load(model_path, map_location="cpu")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     mode = config["mode"]
-    print(f"🧩 Loaded config: mode={mode}, lmax={config['lmax']}")
+    print(f"Loaded config: mode={mode}, lmax={config['lmax']}")
 
     scaler_data = checkpoint["scaler"]
     scaler = Scaler(mode=mode)
@@ -88,13 +83,12 @@ def main(run_path=None):
     else:
         raise ValueError(f"Unknown architecture '{arch}'. Expected 'sirensh' or 'linearsh'.")
 
-    # Instantiate the correct model
     model = ModelClass(
         lmax=config["lmax"],
         hidden_features=config["hidden_features"],
         hidden_layers=config["hidden_layers"],
-        first_omega_0=config.get("first_omega_0"),  # None for SH_LINEAR (ignored)
-        hidden_omega_0=config.get("hidden_omega_0"),  # None for SH_LINEAR (ignored)
+        first_omega_0=config.get("first_omega_0"),
+        hidden_omega_0=config.get("hidden_omega_0"),
         device=device,
         scaler=scaler,
         cache_path=cache_path,
@@ -105,7 +99,6 @@ def main(run_path=None):
     model.load_state_dict(checkpoint["state_dict"])
     model.to(device)
     model.eval()
-    print("✅ Model and scaler loaded successfully.")
 
     def build_tensors_from_df(df, device):
         lon = torch.tensor(df["lon"].values, dtype=torch.float32, device=device)
@@ -118,13 +111,10 @@ def main(run_path=None):
 
         return lon, lat, true_U, true_theta, true_phi, true_mag
 
-    # A: full set
     lon_A, lat_A, U_A, theta_A, phi_A, mag_A = build_tensors_from_df(A, device)
 
-    # F: high-acceleration subset (> mean + 2σ)
     lon_F, lat_F, U_F, theta_F, phi_F, mag_F = build_tensors_from_df(F, device)
 
-    # C: complement
     lon_C, lat_C, U_C, theta_C, phi_C, mag_C = build_tensors_from_df(C, device)
 
     def evaluate_and_save_dataset(
@@ -132,14 +122,14 @@ def main(run_path=None):
             mode,
             lon,
             lat,
-            true_U,  # torch tensor or None
-            true_theta,  # torch tensor
-            true_phi,  # torch tensor
-            true_mag,  # torch tensor
+            true_U,
+            true_theta,
+            true_phi,
+            true_mag,
             scaler,
             device,
             latest_run,
-            prefix_tag,  # 'A', 'F', or 'C'
+            prefix_tag,
     ):
         """
         Runs a SINGLE forward pass for the given subset (A, F, or C),
@@ -149,7 +139,6 @@ def main(run_path=None):
             true_stats:   dict of stats for true fields
         """
 
-        # --- Move to device ---
         lon = lon.to(device)
         lat = lat.to(device)
 
@@ -160,7 +149,6 @@ def main(run_path=None):
         if true_U is not None:
             true_U = true_U.to(device)
 
-        # MODE: U
         if mode == "U":
             lon_req = lon.clone().detach().requires_grad_(True)
             lat_req = lat.clone().detach().requires_grad_(True)
@@ -175,10 +163,8 @@ def main(run_path=None):
             g_phi = g_phys[:, 1]
             g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
 
-            # No separate gradient-based field in this mode
             g_theta_grad = g_phi_grad = g_mag_grad = None
 
-        # MODE: g_direct
         elif mode == "g_direct":
             preds = model(lon, lat).detach()
             g_pred = scaler.unscale_gravity(preds)
@@ -190,7 +176,6 @@ def main(run_path=None):
             U_pred = None
             g_theta_grad = g_phi_grad = g_mag_grad = None
 
-        # MODE: g_indirect
         elif mode == "g_indirect":
             lon_req = lon.clone().detach().requires_grad_(True)
             lat_req = lat.clone().detach().requires_grad_(True)
@@ -207,7 +192,6 @@ def main(run_path=None):
 
             g_theta_grad = g_phi_grad = g_mag_grad = None
 
-        # MODE: g_hybrid
         elif mode == "g_hybrid":
             out = model(lon, lat)
 
@@ -226,26 +210,20 @@ def main(run_path=None):
         else:
             raise ValueError(f"Unsupported mode: {mode}")
 
-        # ---------------------------------------------------------
-        # MSE computation (always from the SAME predictions)
-        # ---------------------------------------------------------
         mse_U = None
         mse_g = None
         mse_grad = None
         mse_consistency = None
 
-        # U error where available
         if U_pred is not None and true_U is not None:
             mse_U = torch.mean((U_pred.ravel() - true_U) ** 2).item()
 
-        # g error
         if g_theta is not None and g_phi is not None:
             mse_g = (
                     torch.mean((g_theta - true_theta) ** 2).item()
                     + torch.mean((g_phi - true_phi) ** 2).item()
             )
 
-        # Hybrid-only metrics
         if mode == "g_hybrid":
             mse_grad = (
                     torch.mean((g_theta_grad - true_theta) ** 2).item()
@@ -264,29 +242,20 @@ def main(run_path=None):
             "mse_consistency": mse_consistency,
         }
 
-        # ---------------------------------------------------------
-        # Save predictions to .npy
-        # ---------------------------------------------------------
         prefix = os.path.join(latest_run, f"test_results_{prefix_tag}")
 
-        # Save U
         if U_pred is not None:
             np.save(f"{prefix}_U.npy", U_pred.cpu().numpy().ravel())
 
-        # Save gravity predictions
         np.save(f"{prefix}_g_theta.npy", g_theta.cpu().numpy())
         np.save(f"{prefix}_g_phi.npy", g_phi.cpu().numpy())
         np.save(f"{prefix}_g_mag.npy", g_mag.cpu().numpy())
 
-        # Save gradient gravity if exists (hybrid)
         if g_theta_grad is not None:
             np.save(f"{prefix}_g_theta_grad.npy", g_theta_grad.cpu().numpy())
             np.save(f"{prefix}_g_phi_grad.npy", g_phi_grad.cpu().numpy())
             np.save(f"{prefix}_g_mag_grad.npy", g_mag_grad.cpu().numpy())
 
-        # ---------------------------------------------------------
-        # Stats helper
-        # ---------------------------------------------------------
         def stats(arr):
             return {
                 "min": float(arr.min()),
@@ -295,7 +264,6 @@ def main(run_path=None):
                 "std": float(arr.std()),
             }
 
-        # Pred stats
         pred_stats = {
             "g_theta": stats(g_theta.cpu().numpy()),
             "g_phi": stats(g_phi.cpu().numpy()),
@@ -310,7 +278,6 @@ def main(run_path=None):
             pred_stats["g_phi_grad"] = stats(g_phi_grad.cpu().numpy())
             pred_stats["g_mag_grad"] = stats(g_mag_grad.cpu().numpy())
 
-        # True stats
         true_stats = {
             "g_theta": stats(true_theta.cpu().numpy()),
             "g_phi": stats(true_phi.cpu().numpy()),
@@ -331,7 +298,6 @@ def main(run_path=None):
         prefix_tag="A"
     )
 
-    # F
     res_F, pred_F, true_F = evaluate_and_save_dataset(
         model, mode,
         lon_F, lat_F,
@@ -341,7 +307,6 @@ def main(run_path=None):
         prefix_tag="F"
     )
 
-    # C
     res_C, pred_C, true_C = evaluate_and_save_dataset(
         model, mode,
         lon_C, lat_C,
@@ -394,7 +359,6 @@ def main(run_path=None):
 
         subset_results = {}
 
-        # Potential case
         if "U" in paths:
             U_path = os.path.join(run_path, paths["U"].format(subset=subset))
             if not os.path.exists(U_path):
@@ -407,7 +371,6 @@ def main(run_path=None):
             subset_results["stats"] = {"U": stats(lin_U)}
             return subset_results
 
-        # Gravity case
         theta_path = os.path.join(run_path, paths["theta"].format(subset=subset))
         phi_path = os.path.join(run_path, paths["phi"].format(subset=subset))
 
@@ -440,7 +403,6 @@ def main(run_path=None):
     for label, paths in linear_paths.items():
         linear_results[label] = {}
 
-        # A
         linear_results[label]["A"] = evaluate_linear_baseline(
             paths=paths,
             subset="A",
@@ -450,7 +412,6 @@ def main(run_path=None):
             true_phi=A["dg_phi_mGal"].to_numpy(),
         )
 
-        # F
         linear_results[label]["F"] = evaluate_linear_baseline(
             paths=paths,
             subset="F",
@@ -460,7 +421,6 @@ def main(run_path=None):
             true_phi=F["dg_phi_mGal"].to_numpy(),
         )
 
-        # C
         linear_results[label]["C"] = evaluate_linear_baseline(
             paths=paths,
             subset="C",
@@ -474,7 +434,6 @@ def main(run_path=None):
         "mode": mode,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
 
-        # Number of samples in each dataset
         "samples": {
             "A": len(A),
             "F": len(F),
@@ -507,8 +466,7 @@ def main(run_path=None):
     with open(meta_file, "w") as f:
         json.dump(meta, f, indent=4)
 
-    print(f"🧩 Metadata saved to {meta_file}")
-    print("✅ Done.")
+    print(f"Metadata saved to {meta_file}")
     return model, test_df
 
 

@@ -146,7 +146,6 @@ class GravityDataGenerator:
 
         df = self._sample_points(df)
         df.to_parquet(self.output_file, index=False)
-        print(f"✅ Saved: {self.output_file}")
         return df
 
 def main():
@@ -177,10 +176,6 @@ def main():
         altitude=altitude
     )
     df_test = generator_test.generate()
-
-    print("\n✅ Both training and testing datasets generated successfully.")
-    print(f"   Train: {len(df_train):,} samples → {generator_train.output_file}")
-    print(f"   Test:  {len(df_test):,} samples → {generator_test.output_file}")
 
 if __name__ == "__main__":
     main()

@@ -12,7 +12,7 @@ import math
 # nonlinearity. Different signals may require different omega_0 in the first layer - this is a
 # hyperparameter.
     
-# If is_first=False, then the weights will be divided by omega_0 so as to keep the magnitude of
+# If is_first=False, then the weights will be divided by omega_0 to keep the magnitude of
 # activations constant, but boost gradients to the weight matrix.
 
 class SineLayer(nn.Module):

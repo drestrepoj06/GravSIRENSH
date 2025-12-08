@@ -22,9 +22,6 @@ class GravityDataPlotter:
             linear_type="mag",
             target_type="acceleration"
     ):
-        # --------------------------
-        # Basic assignments
-        # --------------------------
         self.data_path = data_path
         self.output_dir = output_dir
         self.predictions_dir = predictions_dir
@@ -32,20 +29,13 @@ class GravityDataPlotter:
         self.linear_type = linear_type
         self.target_type = target_type.lower()
 
-        # --------------------------
-        # Load test dataframe
-        # --------------------------
         self.sample_df = pd.read_parquet(data_path)
         self.filename = os.path.basename(data_path)
 
-        # Apply latitude mask (same as test script)
         if "lat" in self.sample_df.columns:
             mask = np.abs(self.sample_df["lat"].values) < 89.9999
             self.sample_df = self.sample_df[mask].reset_index(drop=True)
 
-        # --------------------------
-        # Output directory
-        # --------------------------
         if self.output_dir is None:
             base_dir = os.path.abspath(
                 os.path.join(os.path.dirname(data_path), "..", "Outputs", "Figures")
@@ -55,27 +45,17 @@ class GravityDataPlotter:
         else:
             os.makedirs(self.output_dir, exist_ok=True)
 
-        # --------------------------
-        # Predictions_dir default
-        # --------------------------
         if self.predictions_dir is None:
             self.predictions_dir = self.output_dir
 
-        # --------------------------
-        # Parse filename for metadata
-        # --------------------------
         self.lmax, self.lmax_base, self.n_samples, self.altitude, self.mode = \
             self._parse_filename(self.filename)
 
-        # --------------------------
-        # Load NN predictions
-        # --------------------------
-        self.pred_files = self._find_predictions_file()  # <-- returns dict {"A":path, ...}
-        self.nn_preds = {}  # filled below
+        self.pred_files = self._find_predictions_file()
+        self.nn_preds = {}
         self.nn_errors = {}
 
-        # Construct subset dataframes BEFORE loading predictions
-        self._build_subset_dataframes()  # <-- NEW helper
+        self._build_subset_dataframes()
 
         if self.pred_files:
             self._load_predictions()
@@ -83,9 +63,6 @@ class GravityDataPlotter:
         else:
             self.has_predictions = False
 
-        # --------------------------
-        # Load linear predictions
-        # --------------------------
         self.linear_available = False
         self.linear_preds = {"model": {}, "equiv": {}}
 
@@ -94,7 +71,6 @@ class GravityDataPlotter:
 
     def _build_subset_dataframes(self):
 
-        # Build subsets based on true gravity (as in test script)
         df = self.sample_df
 
         g = df["dg_total_mGal"].values
@@ -135,9 +111,6 @@ class GravityDataPlotter:
 
         for subset in ["A", "F", "C"]:
 
-            # ----------------------------------------
-            # MODEL-LMAX FILE
-            # ----------------------------------------
             path_model = os.path.join(self.linear_dir, f"{fname_base}_{subset}_model.npy")
 
             if os.path.exists(path_model):
@@ -152,9 +125,6 @@ class GravityDataPlotter:
                     print(
                         f"⚠ Length mismatch for {subset} model-lmax: file={len(arr)}, df={len(df_subset)} — skipping.")
 
-            # ----------------------------------------
-            # L_EQUIV FILE
-            # ----------------------------------------
             path_equiv = os.path.join(self.linear_dir, f"{fname_base}_{subset}_equiv.npy")
 
             if os.path.exists(path_equiv):
@@ -225,7 +195,6 @@ class GravityDataPlotter:
             print(f"⚠ No predictions files found for target '{self.target_type}' in {self.predictions_dir}")
             return None
 
-        # store for later use in _load_predictions
         self.pred_files = subset_results
         return subset_results
 
@@ -234,11 +203,9 @@ class GravityDataPlotter:
             print("⚠ No prediction files loaded — skipping.")
             return
 
-        # Container for predictions per subset
-        self.nn_preds = {}  # NN predictions
-        self.nn_errors = {}  # errors per subset
+        self.nn_preds = {}
+        self.nn_errors = {}
 
-        # True value column for each target type
         if self.target_type == "acceleration":
             true_col = "dg_total_mGal"
             pred_col = "predicted_dg_total_mGal"
@@ -251,13 +218,10 @@ class GravityDataPlotter:
         else:
             raise ValueError(f"Unknown target_type '{self.target_type}'")
 
-        # Ensure subset DataFrames exist
         if not hasattr(self, "sample_df_subset"):
             raise RuntimeError("sample_df_subset (A/F/C) must be created before calling _load_predictions().")
 
-        # =============================================
-        # Load predictions per subset
-        # =============================================
+
         for subset, path in self.pred_files.items():
             preds = np.load(path)
 
@@ -267,15 +231,12 @@ class GravityDataPlotter:
                 print(f"⚠ Length mismatch for subset {subset}: preds={len(preds)}, df={len(df_subset)} — skipping.")
                 continue
 
-            # Store predictions
             self.nn_preds[subset] = preds
 
-            # Compute and store errors
             true_vals = df_subset[true_col].to_numpy()
             errors = preds - true_vals
             self.nn_errors[subset] = errors
 
-            # Add columns into subset df
             df_subset[pred_col] = preds
 
             if self.target_type == "acceleration" or self.target_type == "gradients":
@@ -362,17 +323,12 @@ class GravityDataPlotter:
             unit = "m²/s²"
             symbol = "ΔU"
 
-
-        # Loop through subsets
         for subset in ["A", "F", "C"]:
 
             df = self.sample_df_subset[subset]
-            # Directory for this subset
             subset_dir = os.path.join(self.output_dir, f"Maps_{subset}")
             os.makedirs(subset_dir, exist_ok=True)
-            # --------------------------------------------------------------
-            # CASE 1 — No predictions at all
-            # --------------------------------------------------------------
+
             plt.figure(figsize=(10, 5))
             color_data = df[color_by] if (color_by in df.columns) else df[true_col]
 
@@ -389,11 +345,8 @@ class GravityDataPlotter:
 
             out = os.path.join(subset_dir, f"Scatter_Samples_{subset}_{self.target_type}.png")
             plt.savefig(out, dpi=300, bbox_inches="tight")
-            plt.close()  # go to next subset
+            plt.close()
 
-            # --------------------------------------------------------------
-            # CASE 2 — True vs NN Predicted
-            # --------------------------------------------------------------
             df_true = df[true_col].to_numpy()
             df_pred = df[pred_col].to_numpy()
 
@@ -428,9 +381,6 @@ class GravityDataPlotter:
             plt.savefig(out, dpi=300, bbox_inches="tight")
             plt.close()
 
-            # --------------------------------------------------------------
-            # Predicted-only scatter
-            # --------------------------------------------------------------
             plt.figure(figsize=(10, 5))
             ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180))
 
@@ -451,9 +401,6 @@ class GravityDataPlotter:
             plt.savefig(out, dpi=300, bbox_inches="tight")
             plt.close()
 
-            # --------------------------------------------------------------
-            # Histogram: True vs Predicted
-            # --------------------------------------------------------------
             plt.figure(figsize=(8, 5))
             bins = min(50, max(10, len(np.unique(df_true)) // 4))
 
@@ -470,9 +417,6 @@ class GravityDataPlotter:
             plt.savefig(out, dpi=300, bbox_inches="tight")
             plt.close()
 
-            # --------------------------------------------------------------
-            # Linear predictions (if available)
-            # --------------------------------------------------------------
             if self.linear_available:
 
                 for lin_label, lin_dict in [
@@ -485,7 +429,6 @@ class GravityDataPlotter:
 
                     lin_vals = lin_dict[subset]
 
-                    # Plot linear map
                     plt.figure(figsize=(10, 5))
                     ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180))
 
@@ -506,7 +449,6 @@ class GravityDataPlotter:
                     plt.savefig(out, dpi=300, bbox_inches="tight")
                     plt.close()
 
-                    # True vs Linear comparison
                     fig, axes = plt.subplots(
                         1, 2, figsize=(12, 5),
                         subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)}
