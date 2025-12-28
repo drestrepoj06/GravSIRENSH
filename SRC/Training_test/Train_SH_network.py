@@ -164,6 +164,7 @@ def main():
         first_omega_0=first_omega_0,
         hidden_omega_0=hidden_omega_0,
         device=device,
+
         scaler=scaler,
         cache_path=os.path.join(base_dir, "Data", "cache_train.npy"),
         exclude_degrees=exclude_degrees,

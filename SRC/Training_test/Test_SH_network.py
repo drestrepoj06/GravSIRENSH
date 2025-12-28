@@ -134,7 +134,7 @@ def main(run_path=None):
         """
         Runs a SINGLE forward pass for the given subset (A, F, or C),
         computes MSEs, saves predictions to .npy, and returns:
-            results:      dict with mse_U, mse_g, mse_grad, mse_consistency (some may be None)
+            results:      dict with rmse_U, rmse_g, rmse_grad, rmse_consistency (some may be None)
             pred_stats:   dict of stats for predicted fields
             true_stats:   dict of stats for true fields
         """
@@ -210,36 +210,36 @@ def main(run_path=None):
         else:
             raise ValueError(f"Unsupported mode: {mode}")
 
-        mse_U = None
-        mse_g = None
-        mse_grad = None
-        mse_consistency = None
+        rmse_U = None
+        rmse_g = None
+        rmse_grad = None
+        rmse_consistency = None
 
         if U_pred is not None and true_U is not None:
-            mse_U = torch.mean((U_pred.ravel() - true_U) ** 2).item()
+            rmse_U = torch.sqrt(torch.mean((U_pred.ravel() - true_U) ** 2)).item()
 
         if g_theta is not None and g_phi is not None:
-            mse_g = (
+            rmse_g = ((
                     torch.mean((g_theta - true_theta) ** 2).item()
                     + torch.mean((g_phi - true_phi) ** 2).item()
-            )
+            )**0.5)/1e5
 
         if mode == "g_hybrid":
-            mse_grad = (
+            rmse_grad = ((
                     torch.mean((g_theta_grad - true_theta) ** 2).item()
                     + torch.mean((g_phi_grad - true_phi) ** 2).item()
-            )
+            )**0.5)/1e5
 
-            mse_consistency = (
+            rmse_consistency = ((
                     torch.mean((g_theta_grad - g_theta) ** 2).item()
                     + torch.mean((g_phi_grad - g_phi) ** 2).item()
-            )
+            )**0.5)/1e5
 
         results = {
-            "mse_U": mse_U,
-            "mse_g": mse_g,
-            "mse_grad": mse_grad,
-            "mse_consistency": mse_consistency,
+            "rmse_U": rmse_U,
+            "rmse_g": rmse_g,
+            "rmse_grad": rmse_grad,
+            "rmse_consistency": rmse_consistency,
         }
 
         prefix = os.path.join(latest_run, f"test_results_{prefix_tag}")
@@ -365,9 +365,9 @@ def main(run_path=None):
                 return None
 
             lin_U = np.load(U_path)
-            mse = float(np.mean((lin_U - true_U) ** 2))
+            rmse = float(np.sqrt(np.mean((lin_U - true_U)**2)))
 
-            subset_results["mse_U"] = mse
+            subset_results["rmse_U"] = rmse
             subset_results["stats"] = {"U": stats(lin_U)}
             return subset_results
 
@@ -380,10 +380,10 @@ def main(run_path=None):
         lin_theta = np.load(theta_path)
         lin_phi = np.load(phi_path)
 
-        mse_theta = np.mean((lin_theta - true_theta) ** 2)
-        mse_phi = np.mean((lin_phi - true_phi) ** 2)
+        rmse_theta = float(np.sqrt(np.mean((lin_theta - true_theta) ** 2)))
+        rmse_phi = float(np.sqrt(np.mean((lin_phi - true_phi) ** 2)))
 
-        subset_results["mse_g"] = float(mse_theta + mse_phi)
+        subset_results["rmse_g"] = float(rmse_theta + rmse_phi)
         subset_results["stats"] = {
             "theta": stats(lin_theta),
             "phi": stats(lin_phi)
@@ -442,17 +442,17 @@ def main(run_path=None):
 
         "nn": {
             "A": {
-                "mse": res_A,
+                "rmse": res_A,
                 "pred_stats": pred_A,
                 "true_stats": true_A
             },
             "F": {
-                "mse": res_F,
+                "rmse": res_F,
                 "pred_stats": pred_F,
                 "true_stats": true_F
             },
             "C": {
-                "mse": res_C,
+                "rmse": res_C,
                 "pred_stats": pred_C,
                 "true_stats": true_C
             }
