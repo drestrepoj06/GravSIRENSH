@@ -51,7 +51,6 @@ class SIRENNet(nn.Module):
         return self.net(x)
 
 class LINEARNet(nn.Module):
-    """Pure linear network: no activations, arbitrary depth."""
     def __init__(self, in_features, hidden_features, hidden_layers, out_features):
         super().__init__()
         layers = []
@@ -60,6 +59,26 @@ class LINEARNet(nn.Module):
 
         for _ in range(hidden_layers):
             layers.append(nn.Linear(hidden_features, hidden_features))
+
+        layers.append(nn.Linear(hidden_features, out_features))
+
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.model(x)
+
+class GELUNet(nn.Module):
+
+    def __init__(self, in_features, hidden_features, hidden_layers, out_features):
+        super().__init__()
+        layers = []
+
+        layers.append(nn.Linear(in_features, hidden_features))
+        layers.append(nn.GELU())
+
+        for _ in range(hidden_layers - 1):
+            layers.append(nn.Linear(hidden_features, hidden_features))
+            layers.append(nn.GELU())
 
         layers.append(nn.Linear(hidden_features, out_features))
 

@@ -70,22 +70,38 @@ class GravityDataGenerator:
         return res_full, res_low, res_full_U, res_low_U
 
     def _sample_points(self, df):
-        if len(df) <= self.n_samples:
-            return df
+
+        n = len(df)
+        N = self.n_samples
 
         if self.mode == "train":
             weights = np.abs(np.cos(np.radians(df["lat"].values)))
-            return df.sample(n=self.n_samples, weights=weights, random_state=42).reset_index(drop=True)
+
+            if n >= N:
+                return df.sample(n=N, weights=weights, random_state=42).reset_index(drop=True)
+
+            df_all = df.copy()
+            df_extra = df.sample(n=(N - n), weights=weights, replace=True, random_state=42)
+            return pd.concat([df_all, df_extra], ignore_index=True)
 
         elif self.mode == "test":
-            lat_fib, lon_fib, _ = self.fibonacci_spiral_sphere(self.n_samples, self.r0)
+            lat_fib, lon_fib, _ = self.fibonacci_spiral_sphere(N, self.r0)
+
             from scipy.spatial import cKDTree
             coords_grid = np.vstack((df["lat"].values, df["lon"].values)).T
             tree = cKDTree(coords_grid)
+
             coords_fib = np.vstack((lat_fib, lon_fib)).T
             _, idx = tree.query(coords_fib, k=1)
 
             df_test = df.iloc[idx].reset_index(drop=True)
+
+            if len(df_test) < N:
+                df_extra = df_test.sample(n=(N - len(df_test)), replace=True, random_state=42)
+                df_test = pd.concat([df_test, df_extra], ignore_index=True)
+            elif len(df_test) > N:
+                df_test = df_test.iloc[:N].reset_index(drop=True)
+
             return df_test
 
         else:
@@ -144,6 +160,7 @@ class GravityDataGenerator:
             "radius_m": np.full(dU.size, r0, dtype="float32")
         })
 
+        df = df[np.abs(df["lat"].values) < 89.9999].reset_index(drop=True)
         df = self._sample_points(df)
         df.to_parquet(self.output_file, index=False)
         return df
@@ -170,7 +187,7 @@ def main():
     generator_test = GravityDataGenerator(
         lmax_full=lmax_full,
         lmax_base=lmax_base,
-        n_samples=250000,
+        n_samples=10000,
         mode="test",
         output_dir=data_dir,
         altitude=altitude

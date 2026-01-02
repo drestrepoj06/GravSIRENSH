@@ -48,7 +48,6 @@ class SHEmbedding:
             self.theta_grid = torch.from_numpy(np.load(grid_file)).float()
             return
 
-        print(f"Building θ-LUT for lmax={self.lmax} with n_theta={self.n_theta} ...")
         theta_grid = torch.linspace(0.0, torch.pi, self.n_theta)  # [0, π]
         theta_deg = (theta_grid * 180.0 / np.pi).cpu().numpy()
 
@@ -103,12 +102,12 @@ class SHEmbedding:
 
     def forward(self, lon, lat):
         """
-        If use_theta_lut=True -> differentiable wrt lat via LUT interpolation."""
-        lon = lon.to(torch.float32)
-        lat = lat.to(torch.float32)
+        If use_theta_lut=True -> differentiableaa wrt lat via LUT interpolation."""
+
+        lon = lon.float()
+        lat = lat.float()
 
         if self.lmax == 0:
-            # use radians (better for SIREN)
             lon_rad = torch.deg2rad(lon)
             lat_rad = torch.deg2rad(lat)
 

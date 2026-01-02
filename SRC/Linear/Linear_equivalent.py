@@ -8,14 +8,9 @@ import pyshtools as pysh
 import pandas as pd
 import os
 from scipy.interpolate import RegularGridInterpolator
+import time
 
 class LinearEquivalentGenerator:
-    """
-      • Computes L_equiv from NN parameter count and builds linear residual SH model (full − l=2)
-      • Computes Lmax from the same lmax used in the embedding
-      • Saves dU, g_r, g_theta, g_phi, g_mag as .npy
-      • Stores all results in the object
-    """
 
     def __init__(self, run_dir, data_path, altitude=0.0):
 
@@ -26,25 +21,31 @@ class LinearEquivalentGenerator:
         with open(os.path.join(run_dir, "config.json")) as f:
             self.config = json.load(f)
 
-        self.lmax = self.config["lmax"]
-        params = self.compute_siren_params(self.config)
+        self.is_pinn = ("lmax" not in self.config) or (self.config.get("model_type", "").lower() == "pinn")
+
+        self.lmax = self.config.get("lmax", None)
+
+        params = self.compute_model_params(self.config)
         self.L_equiv = self.params_to_lmax(params)
 
-        (
-            df_grid_model, model_dU_grid, model_lats,
-            model_lons, model_clm_full_g, model_clm_low_g, model_r0
-        ) = self.generate_linear_equiv(self.lmax)
+        if self.lmax is not None:
+            (
+                df_grid_model, model_dU_grid, model_lats,
+                model_lons, model_clm_full_g, model_clm_low_g, model_r0
+            ) = self.generate_linear_equiv(self.lmax)
 
-        self.model = {
-            "df_grid": df_grid_model,
-            "dU_grid": model_dU_grid,
-            "lats": model_lats,
-            "lons": model_lons,
-            "clm_full_g": model_clm_full_g,
-            "clm_low_g": model_clm_low_g,
-            "r0": model_r0,
-            "L": self.lmax
-        }
+            self.model = {
+                "df_grid": df_grid_model,
+                "dU_grid": model_dU_grid,
+                "lats": model_lats,
+                "lons": model_lons,
+                "clm_full_g": model_clm_full_g,
+                "clm_low_g": model_clm_low_g,
+                "r0": model_r0,
+                "L": self.lmax
+            }
+        else:
+            self.model = None
 
         (
             df_grid_equiv, equiv_dU_grid, equiv_lats,
@@ -61,24 +62,26 @@ class LinearEquivalentGenerator:
             "r0": equiv_r0,
             "L": self.L_equiv
         }
-
     @staticmethod
-    def compute_siren_params(config):
-        lmax = config["lmax"]
+    def compute_model_params(config):
         hidden = config["hidden_features"]
         layers = config["hidden_layers"]
-
-        input_dim = (lmax + 1) ** 2
 
         mode = config.get("mode", "U")
         if mode in ["U", "g_indirect"]:
             output_dim = 1
         elif mode == "g_direct":
             output_dim = 2
-        elif mode == "g_hybrid":  # ["U_g_direct", "U_g_indirect", "U_g_hybrid"]
-            output_dim = 3
+        # elif mode == "g_hybrid":
+        #     output_dim = 3
         else:
             raise ValueError(f"Unknown mode '{mode}'")
+
+        if "lmax" in config and config["lmax"] is not None:
+            lmax = config["lmax"]
+            input_dim = (lmax + 1) ** 2
+        else:
+            input_dim = 2
 
         params = input_dim * hidden + hidden
         for _ in range(layers - 1):
@@ -191,22 +194,27 @@ class LinearEquivalentGenerator:
             (lats_grid, lons_grid), dU_grid,
             bounds_error=False, fill_value=None
         )
+        t0 = time.perf_counter()
         dU = interp(np.column_stack((lat_f, lon_f))).astype("float32")
+        t_interp = time.perf_counter() - t0
 
-        g_full = clm_full_g.expand(
-            lat=lat_f.reshape(-1, 1),
-            lon=lon_f.reshape(-1, 1),
-            r=r_f.reshape(-1, 1),
-            lmax=L,
-            degrees=True
-        )
-        g_low = clm_low_g.expand(
-            lat=lat_f.reshape(-1, 1),
-            lon=lon_f.reshape(-1, 1),
-            r=r_f.reshape(-1, 1),
-            lmax=2,
-            degrees=True
-        )
+        t0 = time.perf_counter()
+        g_full = clm_full_g.expand(lat=lat_f, lon=lon_f, r=r_f, lmax=L, degrees=True)
+        t_full = time.perf_counter() - t0
+
+        t0 = time.perf_counter()
+        g_low  = clm_low_g.expand(lat=lat_f, lon=lon_f, r=r_f, lmax=2, degrees=True)
+        t_low = time.perf_counter() - t0
+
+
+        t_total = t_interp + t_full + t_low
+        timing = {
+            "n_points": int(len(lat_f)),
+            "t_interp_s": float(t_interp),
+            "t_expand_full_s": float(t_full),
+            "t_expand_low_s": float(t_low),
+            "t_total_s": float(t_total),
+        }
 
         g = g_full - g_low
 
@@ -238,4 +246,4 @@ class LinearEquivalentGenerator:
                 np.save(f"{self.run_dir}/linear_g_phi_{s}_{label}.npy", g_phi[idx])
                 np.save(f"{self.run_dir}/linear_g_mag_{s}_{label}.npy", g_mag[idx])
 
-        return out
+        return out, timing

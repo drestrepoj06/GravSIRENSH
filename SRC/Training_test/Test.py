@@ -6,9 +6,10 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 import multiprocessing as mp
+import time
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.Location_encoder.SH_network import SH_SIREN, SH_LINEAR, Scaler
+from SRC.Location_encoder.Coordinates_network import SH_SIREN, SH_LINEAR, PINN, PINNScaler, Scaler
 from SRC.Linear.Linear_equivalent import LinearEquivalentGenerator
 
 
@@ -58,46 +59,90 @@ def main(run_path=None):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     mode = config["mode"]
-    print(f"Loaded config: mode={mode}, lmax={config['lmax']}")
+    print(f"Loaded config: mode={mode}")
 
     scaler_data = checkpoint["scaler"]
-    scaler = Scaler(mode=mode)
-    scaler.U_mean = scaler_data.get("U_mean")
-    scaler.U_std = scaler_data.get("U_std")
-
-    g_mean = scaler_data.get("g_mean")
-    g_std = scaler_data.get("g_std")
-
-    if g_mean is not None:
-        scaler.g_mean = torch.tensor(g_mean, dtype=torch.float32, device=device)
-    if g_std is not None:
-        scaler.g_std = torch.tensor(g_std, dtype=torch.float32, device=device)
-
-    cache_path = os.path.join(base_dir, "Data", "cache_test.npy")
     arch = config["architecture"]
+
+    if arch == "pinn":
+        base_scaler = Scaler(mode=mode)
+
+        base_blob = scaler_data.get("base", {})
+        base_scaler.U_mean = base_blob.get("U_mean")
+        base_scaler.U_std = base_blob.get("U_std")
+
+        g_mean = base_blob.get("g_mean")
+        g_std = base_blob.get("g_std")
+        if g_mean is not None:
+            base_scaler.g_mean = torch.tensor(g_mean, dtype=torch.float32, device=device)
+        if g_std is not None:
+            base_scaler.g_std = torch.tensor(g_std, dtype=torch.float32, device=device)
+
+        scaler = PINNScaler(base_scaler=base_scaler)
+
+        a_scale = scaler_data.get("a_scale", None)
+        scaler.a_scale = 1.0 if a_scale is None else float(a_scale)
+
+        U_scale = scaler_data.get("U_scale", None)
+        scaler.U_scale = 1.0 if U_scale is None else float(U_scale)
+
+    else:
+        scaler = Scaler(mode=mode)
+        scaler.U_mean = scaler_data.get("U_mean")
+        scaler.U_std = scaler_data.get("U_std")
+
+        g_mean = scaler_data.get("g_mean")
+        g_std = scaler_data.get("g_std")
+        if g_mean is not None:
+            scaler.g_mean = torch.tensor(g_mean, dtype=torch.float32, device=device)
+        if g_std is not None:
+            scaler.g_std = torch.tensor(g_std, dtype=torch.float32, device=device)
 
     if arch == "sirensh":
         ModelClass = SH_SIREN
     elif arch == "linearsh":
         ModelClass = SH_LINEAR
+    elif arch == "pinn":
+        ModelClass = PINN
     else:
-        raise ValueError(f"Unknown architecture '{arch}'. Expected 'sirensh' or 'linearsh'.")
+        raise ValueError(f"Unknown architecture '{arch}'. Expected 'sirensh', 'linearsh', or 'pinn'.")
 
-    model = ModelClass(
-        lmax=config["lmax"],
-        hidden_features=config["hidden_features"],
-        hidden_layers=config["hidden_layers"],
-        first_omega_0=config.get("first_omega_0"),
-        hidden_omega_0=config.get("hidden_omega_0"),
-        device=device,
-        scaler=scaler,
-        cache_path=cache_path,
-        exclude_degrees=config.get("exclude_degrees"),
-        mode=mode,
-    )
+    cache_path = os.path.join(base_dir, "Data", "cache_test.npy")
 
-    model.load_state_dict(checkpoint["state_dict"])
-    model.to(device)
+    if arch == "pinn":
+        model = ModelClass(
+            hidden_features=config["hidden_features"],
+            hidden_layers=config["hidden_layers"],
+            device=device,
+            scaler=scaler,
+            mode=mode,
+        )
+    else:
+        model = ModelClass(
+            lmax=config["lmax"],
+            hidden_features=config["hidden_features"],
+            hidden_layers=config["hidden_layers"],
+            device=device,
+            scaler=scaler,
+            cache_path=cache_path,
+            exclude_degrees=config.get("exclude_degrees"),
+            mode=mode,
+            first_omega_0=config.get("first_omega_0") if arch == "sirensh" else None,
+            hidden_omega_0=config.get("hidden_omega_0") if arch == "sirensh" else None,
+        )
+
+    state = checkpoint["state_dict"]
+
+    if arch == "pinn":
+        model_state = model.state_dict()
+        filtered = {k: v for k, v in state.items()
+                    if k in model_state and model_state[k].shape == v.shape}
+
+        model.load_state_dict(filtered, strict=False)
+    else:
+        model.load_state_dict(state)
+
+    model = model.to(device)
     model.eval()
 
     def build_tensors_from_df(df, device):
@@ -139,6 +184,16 @@ def main(run_path=None):
             true_stats:   dict of stats for true fields
         """
 
+        def unscale_g(scaler, g_scaled):
+            if hasattr(scaler, "unscale_gravity"):
+                return scaler.unscale_gravity(g_scaled)
+
+            if hasattr(scaler, "unscale_accel_uniform"):
+                return scaler.unscale_accel_uniform(g_scaled)
+
+            raise AttributeError(
+                f"Scaler of type {type(scaler).__name__} has no unscale_gravity or unscale_accel_uniform."
+            )
         lon = lon.to(device)
         lat = lat.to(device)
 
@@ -149,26 +204,40 @@ def main(run_path=None):
         if true_U is not None:
             true_U = true_U.to(device)
 
-        if mode == "U":
-            lon_req = lon.clone().detach().requires_grad_(True)
-            lat_req = lat.clone().detach().requires_grad_(True)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t0 = time.perf_counter()
 
+        if mode == "g_direct":
+            with torch.no_grad():
+                preds = model(lon, lat)
+            U_scaled, grads = None, None
+
+        elif mode == "U":
+            lon_req = lon.detach().clone().requires_grad_(True)
+            lat_req = lat.detach().clone().requires_grad_(True)
             U_scaled, grads = model(lon_req, lat_req, return_gradients=True)
-            U_pred = scaler.unscale_potential(U_scaled).detach()
+            preds = None
 
-            g_scaled = torch.stack(grads, dim=1)
-            g_phys = scaler.unscale_gravity(g_scaled).detach()
+        elif mode == "g_indirect":
+            lon_req = lon.detach().clone().requires_grad_(True)
+            lat_req = lat.detach().clone().requires_grad_(True)
+            U_scaled, grads = model(lon_req, lat_req)
+            preds = None
 
-            g_theta = g_phys[:, 0]
-            g_phi = g_phys[:, 1]
-            g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        t_pred = time.perf_counter() - t0
 
-            g_theta_grad = g_phi_grad = g_mag_grad = None
+        timing_nn = {
+            "n_points": int(lon.shape[0]),
+            "t_pred_s": float(t_pred),
+            "mode": mode,
+            "device": str(device),
+        }
 
-        elif mode == "g_direct":
-            preds = model(lon, lat).detach()
-            g_pred = scaler.unscale_gravity(preds)
-
+        if mode == "g_direct":
+            g_pred = unscale_g(scaler, preds).detach()
             g_theta = g_pred[:, 0]
             g_phi = g_pred[:, 1]
             g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
@@ -176,15 +245,11 @@ def main(run_path=None):
             U_pred = None
             g_theta_grad = g_phi_grad = g_mag_grad = None
 
-        elif mode == "g_indirect":
-            lon_req = lon.clone().detach().requires_grad_(True)
-            lat_req = lat.clone().detach().requires_grad_(True)
-
-            U_scaled, grads = model(lon_req, lat_req)
+        elif mode in ["U", "g_indirect"]:
             U_pred = scaler.unscale_potential(U_scaled).detach()
 
             g_scaled = torch.stack(grads, dim=1)
-            g_phys = scaler.unscale_gravity(g_scaled).detach()
+            g_phys = unscale_g(scaler, g_scaled).detach()
 
             g_theta = g_phys[:, 0]
             g_phi = g_phys[:, 1]
@@ -192,20 +257,6 @@ def main(run_path=None):
 
             g_theta_grad = g_phi_grad = g_mag_grad = None
 
-        elif mode == "g_hybrid":
-            out = model(lon, lat)
-
-            U_pred = scaler.unscale_potential(out["U_pred"]).detach()
-            g_pred = scaler.unscale_gravity(out["g_pred"]).detach()
-            g_from_grad = scaler.unscale_gravity(out["g_from_gradU"]).detach()
-
-            g_theta = g_pred[:, 0]
-            g_phi = g_pred[:, 1]
-            g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
-
-            g_theta_grad = g_from_grad[:, 0]
-            g_phi_grad = g_from_grad[:, 1]
-            g_mag_grad = torch.sqrt(g_theta_grad ** 2 + g_phi_grad ** 2)
 
         else:
             raise ValueError(f"Unsupported mode: {mode}")
@@ -222,17 +273,6 @@ def main(run_path=None):
             rmse_g = ((
                     torch.mean((g_theta - true_theta) ** 2).item()
                     + torch.mean((g_phi - true_phi) ** 2).item()
-            )**0.5)/1e5
-
-        if mode == "g_hybrid":
-            rmse_grad = ((
-                    torch.mean((g_theta_grad - true_theta) ** 2).item()
-                    + torch.mean((g_phi_grad - true_phi) ** 2).item()
-            )**0.5)/1e5
-
-            rmse_consistency = ((
-                    torch.mean((g_theta_grad - g_theta) ** 2).item()
-                    + torch.mean((g_phi_grad - g_phi) ** 2).item()
             )**0.5)/1e5
 
         results = {
@@ -287,9 +327,9 @@ def main(run_path=None):
         if true_U is not None:
             true_stats["U"] = stats(true_U.cpu().numpy())
 
-        return results, pred_stats, true_stats
+        return results, pred_stats, true_stats, timing_nn
 
-    res_A, pred_A, true_A = evaluate_and_save_dataset(
+    res_A, pred_A, true_A, timing_A = evaluate_and_save_dataset(
         model, mode,
         lon_A, lat_A,
         U_A, theta_A, phi_A, mag_A,
@@ -298,7 +338,7 @@ def main(run_path=None):
         prefix_tag="A"
     )
 
-    res_F, pred_F, true_F = evaluate_and_save_dataset(
+    res_F, pred_F, true_F, timing_F = evaluate_and_save_dataset(
         model, mode,
         lon_F, lat_F,
         U_F, theta_F, phi_F, mag_F,
@@ -307,7 +347,7 @@ def main(run_path=None):
         prefix_tag="F"
     )
 
-    res_C, pred_C, true_C = evaluate_and_save_dataset(
+    res_C, pred_C, true_C, timing_C = evaluate_and_save_dataset(
         model, mode,
         lon_C, lat_C,
         U_C, theta_C, phi_C, mag_C,
@@ -318,21 +358,26 @@ def main(run_path=None):
 
     gen = LinearEquivalentGenerator(run_path, test_path)
 
-    lin_model = gen.evaluate_on_test(
-        df_grid=gen.model["df_grid"],
-        dU_grid=gen.model["dU_grid"],
-        lats_grid=gen.model["lats"],
-        lons_grid=gen.model["lons"],
-        clm_full_g=gen.model["clm_full_g"],
-        clm_low_g=gen.model["clm_low_g"],
-        r0=gen.model["r0"],
-        L=gen.model["L"],
-        save=True,
-        label="model",
-        A_idx=A_idx, F_idx=F_idx, C_idx=C_idx
-    )
+    lin_model = None
+    lin_model_timing = None
+    lin_equiv_timing = None
 
-    lin_equiv = gen.evaluate_on_test(
+    if gen.model is not None:
+        lin_model, lin_model_timing = gen.evaluate_on_test(
+            df_grid=gen.model["df_grid"],
+            dU_grid=gen.model["dU_grid"],
+            lats_grid=gen.model["lats"],
+            lons_grid=gen.model["lons"],
+            clm_full_g=gen.model["clm_full_g"],
+            clm_low_g=gen.model["clm_low_g"],
+            r0=gen.model["r0"],
+            L=gen.model["L"],
+            save=True,
+            label="model",
+            A_idx=A_idx, F_idx=F_idx, C_idx=C_idx
+        )
+
+    lin_equiv, lin_equiv_timing = gen.evaluate_on_test(
         df_grid=gen.equiv["df_grid"],
         dU_grid=gen.equiv["dU_grid"],
         lats_grid=gen.equiv["lats"],
@@ -383,7 +428,7 @@ def main(run_path=None):
         rmse_theta = float(np.sqrt(np.mean((lin_theta - true_theta) ** 2)))
         rmse_phi = float(np.sqrt(np.mean((lin_phi - true_phi) ** 2)))
 
-        subset_results["rmse_g"] = float(rmse_theta + rmse_phi)
+        subset_results["rmse_g"] = float((rmse_theta + rmse_phi)/1e5)
         subset_results["stats"] = {
             "theta": stats(lin_theta),
             "phi": stats(lin_phi)
@@ -441,23 +486,22 @@ def main(run_path=None):
         },
 
         "nn": {
-            "A": {
-                "rmse": res_A,
-                "pred_stats": pred_A,
-                "true_stats": true_A
-            },
-            "F": {
-                "rmse": res_F,
-                "pred_stats": pred_F,
-                "true_stats": true_F
-            },
-            "C": {
-                "rmse": res_C,
-                "pred_stats": pred_C,
-                "true_stats": true_C
-            }
+            "A": {"rmse": res_A, "pred_stats": pred_A, "true_stats": true_A},
+            "F": {"rmse": res_F, "pred_stats": pred_F, "true_stats": true_F},
+            "C": {"rmse": res_C, "pred_stats": pred_C, "true_stats": true_C},
         },
+
         "linear": linear_results,
+
+        "timing": {
+            "linear_baseline": {
+                "equiv": lin_equiv_timing,
+                "model": lin_model_timing if lin_model is not None else None,
+            },
+            "nn": {
+                "A": timing_A
+            }
+        }
     }
 
 
