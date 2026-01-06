@@ -142,7 +142,7 @@ class GravityDataGenerator:
         dg_r = gr_full - gr_low
         dg_theta = gtheta_full - gtheta_low
         dg_phi = gphi_full - gphi_low
-        dg_total = np.sqrt(dg_theta**2 + dg_phi**2)#+dg_r**2) the radial component will be added when changing altitude
+        dg_total = np.sqrt(dg_theta**2 + dg_phi**2+dg_r**2)
 
         lats = res_full.pot.lats()
         lons = res_full.pot.lons()
@@ -172,7 +172,7 @@ def main():
 
     lmax_full = 2190
     lmax_base = 2
-    altitude = 0.0
+    altitude = 420000
 
     generator_train = GravityDataGenerator(
         lmax_full=lmax_full,
@@ -187,7 +187,7 @@ def main():
     generator_test = GravityDataGenerator(
         lmax_full=lmax_full,
         lmax_base=lmax_base,
-        n_samples=10000,
+        n_samples=250000,
         mode="test",
         output_dir=data_dir,
         altitude=altitude

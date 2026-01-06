@@ -60,6 +60,7 @@ class PINNScaler:
         self.base = base_scaler
         self.a_scale = None if a_scale is None else float(a_scale)
         self.U_scale = None if U_scale is None else float(U_scale)
+        self.R = np.pi  # uniform angular scale
 
     def fit(self, df):
         if self.U_scale is None:
@@ -79,9 +80,11 @@ class PINNScaler:
         return self
 
     def scale_coords(self, lonlat_deg):
-        return lonlat_deg * (np.pi / 180.0)
+        lonlat_rad = lonlat_deg * (np.pi / 180.0)
+        return lonlat_rad / self.R
 
-    def unscale_coords(self, lonlat_rad):
+    def unscale_coords(self, lonlat_scaled):
+        lonlat_rad = lonlat_scaled * self.R
         return lonlat_rad * (180.0 / np.pi)
 
     def scale_potential(self, U):
@@ -189,7 +192,9 @@ class SH_SIREN(nn.Module):
                         retain_graph=self.training,
                         only_inputs=True
                     )
-                    return outputs, grads
+
+                    dU_dlon, dU_dlat = -grads[0], -grads[1]
+                    return outputs, (dU_dlon, dU_dlat)
             else:
                 lon = lon.to(net_device)
                 lat = lat.to(net_device)
@@ -314,7 +319,9 @@ class SH_LINEAR(nn.Module):
                         retain_graph=self.training,
                         only_inputs=True
                     )
-                    return outputs, grads
+
+                    dU_dlon, dU_dlat = -grads[0], -grads[1]
+                    return outputs, (dU_dlon, dU_dlat)
 
             else:
                 Y = self.embedding(lon, lat).to(self.device)
@@ -441,7 +448,7 @@ class PINN(nn.Module):
                 retain_graph=self.training,
                 only_inputs=True,
             )
-            dU_dlon, dU_dlat = grads[0], grads[1]
+            dU_dlon, dU_dlat = -grads[0], -grads[1]
 
             if self.mode == "U":
                 if return_gradients:
@@ -449,8 +456,8 @@ class PINN(nn.Module):
                 return U_pred
 
             # g_indirect: g = -∇U
-            g_theta = -dU_dlat
-            g_phi   = -dU_dlon
+            g_theta = dU_dlat
+            g_phi   = dU_dlon
             return U_pred, (g_theta, g_phi)
 
 class Gravity(pl.LightningModule):
@@ -472,7 +479,7 @@ class Gravity(pl.LightningModule):
             model_cfg = dict(model_cfg)
             model_cfg["scaler"] = scaler
             self.model = PINN(**model_cfg)
-            self.mode = model_cfg.get("mode", "g_indirect")
+            self.mode = model_cfg.get("mode", "U")
 
         else:
             raise ValueError(
@@ -481,8 +488,6 @@ class Gravity(pl.LightningModule):
 
         self.scaler = scaler
         self.lr = lr
-
-        self.lambda_consistency = 1e-1
 
         self.scaler = scaler
         self.criterion = nn.MSELoss()

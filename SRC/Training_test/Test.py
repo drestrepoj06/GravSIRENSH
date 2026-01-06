@@ -178,7 +178,7 @@ def main(run_path=None):
     ):
         """
         Runs a SINGLE forward pass for the given subset (A, F, or C),
-        computes MSEs, saves predictions to .npy, and returns:
+        computes RMSEs, saves predictions to .npy, and returns:
             results:      dict with rmse_U, rmse_g, rmse_grad, rmse_consistency (some may be None)
             pred_stats:   dict of stats for predicted fields
             true_stats:   dict of stats for true fields
@@ -494,9 +494,11 @@ def main(run_path=None):
         "linear": linear_results,
 
         "timing": {
-            "linear_baseline": {
-                "equiv": lin_equiv_timing,
-                "model": lin_model_timing if lin_model is not None else None,
+            "linear": {
+                "A": {
+                    "equiv": lin_equiv_timing,
+                    "model": lin_model_timing if lin_model is not None else None
+                }
             },
             "nn": {
                 "A": timing_A
