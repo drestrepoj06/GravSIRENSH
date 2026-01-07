@@ -179,7 +179,7 @@ def main(run_path=None):
         """
         Runs a SINGLE forward pass for the given subset (A, F, or C),
         computes RMSEs, saves predictions to .npy, and returns:
-            results:      dict with rmse_U, rmse_g, rmse_grad, rmse_consistency (some may be None)
+            results:      dict with rmse_U, rmse_g (some may be None)
             pred_stats:   dict of stats for predicted fields
             true_stats:   dict of stats for true fields
         """
@@ -263,8 +263,6 @@ def main(run_path=None):
 
         rmse_U = None
         rmse_g = None
-        rmse_grad = None
-        rmse_consistency = None
 
         if U_pred is not None and true_U is not None:
             rmse_U = torch.sqrt(torch.mean((U_pred.ravel() - true_U) ** 2)).item()
@@ -277,9 +275,7 @@ def main(run_path=None):
 
         results = {
             "rmse_U": rmse_U,
-            "rmse_g": rmse_g,
-            "rmse_grad": rmse_grad,
-            "rmse_consistency": rmse_consistency,
+            "rmse_g": rmse_g
         }
 
         prefix = os.path.join(latest_run, f"test_results_{prefix_tag}")
@@ -425,10 +421,8 @@ def main(run_path=None):
         lin_theta = np.load(theta_path)
         lin_phi = np.load(phi_path)
 
-        rmse_theta = float(np.sqrt(np.mean((lin_theta - true_theta) ** 2)))
-        rmse_phi = float(np.sqrt(np.mean((lin_phi - true_phi) ** 2)))
 
-        subset_results["rmse_g"] = float((rmse_theta + rmse_phi)/1e5)
+        subset_results["rmse_g"] = float(np.sqrt(np.mean((lin_theta-true_theta)**2) + np.mean((lin_phi-true_phi)**2)) / 1e5)
         subset_results["stats"] = {
             "theta": stats(lin_theta),
             "phi": stats(lin_phi)

@@ -37,13 +37,21 @@ class Scaler:
 
         return self
 
+    def _as_torch(self, x, like: torch.Tensor):
+        if torch.is_tensor(x):
+            return x.to(device=like.device, dtype=like.dtype)
+        return torch.as_tensor(x, device=like.device, dtype=like.dtype)
+
     def scale_potential(self, U):
         if self.U_mean is None:
             raise ValueError("Scaler not fitted for potential.")
         return (U - self.U_mean) / self.U_std
 
     def unscale_potential(self, U_scaled):
-        return U_scaled * self.U_std + self.U_mean
+        mean = self._as_torch(self.U_mean, U_scaled)
+        std = self._as_torch(self.U_std, U_scaled)
+
+        return U_scaled * std + mean
 
     def scale_gravity(self, g):
         if self.g_mean is None:
@@ -51,7 +59,9 @@ class Scaler:
         return (g - self.g_mean) / self.g_std
 
     def unscale_gravity(self, g_scaled):
-        return g_scaled * self.g_std + self.g_mean
+        mean = self._as_torch(self.g_mean, g_scaled)
+        std = self._as_torch(self.g_std, g_scaled)
+        return g_scaled * std + mean
 
 # Using https://github.com/MartinAstro/GravNN/blob/5debb42013097944c0398fe5b570d7cd9ebd43bd/GravNN/Preprocessors/UniformScaler.py#L3
 # Scale of raw coordinates too
@@ -193,8 +203,10 @@ class SH_SIREN(nn.Module):
                         only_inputs=True
                     )
 
-                    dU_dlon, dU_dlat = -grads[0], -grads[1]
-                    return outputs, (dU_dlon, dU_dlat)
+                    g_theta = -grads[1]
+                    g_phi = -grads[0]
+
+                    return outputs, (g_theta, g_phi)
             else:
                 lon = lon.to(net_device)
                 lat = lat.to(net_device)
@@ -320,8 +332,10 @@ class SH_LINEAR(nn.Module):
                         only_inputs=True
                     )
 
-                    dU_dlon, dU_dlat = -grads[0], -grads[1]
-                    return outputs, (dU_dlon, dU_dlat)
+                    g_theta = -grads[1]
+                    g_phi = -grads[0]
+
+                    return outputs, (g_theta, g_phi)
 
             else:
                 Y = self.embedding(lon, lat).to(self.device)
@@ -452,10 +466,9 @@ class PINN(nn.Module):
 
             if self.mode == "U":
                 if return_gradients:
-                    return U_pred, (dU_dlon, dU_dlat)
+                    return U_pred, (dU_dlat, dU_dlon)
                 return U_pred
 
-            # g_indirect: g = -∇U
             g_theta = dU_dlat
             g_phi   = dU_dlon
             return U_pred, (g_theta, g_phi)
@@ -488,10 +501,7 @@ class Gravity(pl.LightningModule):
 
         self.scaler = scaler
         self.lr = lr
-
-        self.scaler = scaler
         self.criterion = nn.MSELoss()
-        self.lr = lr
 
     def forward(self, lon, lat):
         return self.model(lon, lat)
