@@ -66,9 +66,8 @@ class LINEARNet(nn.Module):
 
     def forward(self, x):
         return self.model(x)
-
+## GELUNet with Glorot uniform initialization as Martin & Schaub (2022) propose
 class GELUNet(nn.Module):
-
     def __init__(self, in_features, hidden_features, hidden_layers, out_features):
         super().__init__()
         layers = []
@@ -83,6 +82,15 @@ class GELUNet(nn.Module):
         layers.append(nn.Linear(hidden_features, out_features))
 
         self.model = nn.Sequential(*layers)
+
+        self.apply(self._init_weights)
+
+    @staticmethod
+    def _init_weights(m):
+        if isinstance(m, nn.Linear):
+            nn.init.xavier_uniform_(m.weight)
+            if m.bias is not None:
+                nn.init.zeros_(m.bias)
 
     def forward(self, x):
         return self.model(x)
