@@ -5,7 +5,7 @@ jhonr
 
 import torch
 import torch.nn as nn
-from SRC.Location_encoder.SH_embedding import SHEmbedding
+from SRC.Location_encoder.SH_embedding import SHPlusR, SHEmbedding
 from SRC.Location_encoder.Networks import SIRENNet, LINEARNet, GELUNet
 import lightning.pytorch as pl
 import numpy as np
@@ -30,7 +30,7 @@ class Scaler:
             self.U_std  = float(U.std())
 
         if self.mode in ["U", "g_direct", "g_indirect"]:
-            g_cols = ["dg_theta_mGal", "dg_phi_mGal"]
+            g_cols = ["dg_theta_mGal", "dg_phi_mGal", "dg_r_mGal"]
             g_vals = df[g_cols].to_numpy()
             self.g_mean = g_vals.mean(axis=0)
             self.g_std  = g_vals.std(axis=0)
@@ -60,7 +60,7 @@ class PINNScaler:
         self.base = base_scaler
         self.a_scale = None if a_scale is None else float(a_scale)
         self.U_scale = None if U_scale is None else float(U_scale)
-        self.R = np.pi  # uniform angular scale
+        self.Rang = np.pi
 
     def fit(self, df):
         if self.U_scale is None:
@@ -79,13 +79,38 @@ class PINNScaler:
 
         return self
 
-    def scale_coords(self, lonlat_deg):
-        lonlat_rad = lonlat_deg * (np.pi / 180.0)
-        return lonlat_rad / self.R
+    def scale_coords(self, lonlatr):
+        """
+        lonlatr: array-like (..., 3) = [lon_deg, lat_deg, r_m]
+        returns: (..., 3) = [lon_scaled, lat_scaled, rho]
+        """
+        lon_deg = lonlatr[..., 0]
+        lat_deg = lonlatr[..., 1]
+        r_m = lonlatr[..., 2]
 
-    def unscale_coords(self, lonlat_scaled):
-        lonlat_rad = lonlat_scaled * self.R
-        return lonlat_rad * (180.0 / np.pi)
+        lon_rad = lon_deg * (np.pi / 180.0)
+        lat_rad = lat_deg * (np.pi / 180.0)
+
+        lon_scaled = lon_rad / self.Rang  # [-1, 1] if lon in [-pi, pi]
+        lat_scaled = lat_rad / self.Rang  # [-0.5, 0.5] if lat in [-pi/2, pi/2]
+
+        rho = r_m / self.r_scale  # ~ 1 + h/R
+
+        return np.stack([lon_scaled, lat_scaled, rho], axis=-1)
+
+    def unscale_coords(self, coords_scaled):
+        lon_scaled = coords_scaled[..., 0]
+        lat_scaled = coords_scaled[..., 1]
+        rho = coords_scaled[..., 2]
+
+        lon_rad = lon_scaled * self.Rang
+        lat_rad = lat_scaled * self.Rang
+
+        lon_deg = lon_rad * (180.0 / np.pi)
+        lat_deg = lat_rad * (180.0 / np.pi)
+
+        r_m = rho * self.r_scale
+        return np.stack([lon_deg, lat_deg, r_m], axis=-1)
 
     def scale_potential(self, U):
         return U / self.U_scale
@@ -133,7 +158,7 @@ class SH_SIREN(nn.Module):
         self.out_features = int(out_features)
         self.cache_path = cache_path
 
-        self.embedding = SHEmbedding(
+        base_emb = SHEmbedding(
             lmax=lmax,
             normalization=normalization,
             cache_path=cache_path,
@@ -141,22 +166,25 @@ class SH_SIREN(nn.Module):
             n_theta=18001,
             exclude_degrees=exclude_degrees
         )
+        if lmax > 0 and base_emb.use_theta_lut:
+            base_emb.build_theta_lut()
 
-        if lmax > 0 and self.embedding.use_theta_lut:
-            self.embedding.build_theta_lut()
+        # NEW: embedding that concatenates rho = r/R
+        self.embedding = SHPlusR(base_emb, R_ref=self.r_scale)
 
         if lmax == 0:
-            in_features = 2
+            in_features = 3
         else:
             dummy_lon = torch.tensor([0.0])
             dummy_lat = torch.tensor([0.0])
-            Y_dummy = self.embedding(dummy_lon, dummy_lat)
-            in_features = Y_dummy.shape[1]
+            dummy_r = torch.tensor([self.r_scale])  # r = R
+            X_dummy = self.embedding(dummy_lon, dummy_lat, dummy_r)
+            in_features = X_dummy.shape[1]
 
         if mode in ["U", "g_indirect"]:
             out_features = 1
         elif mode in ["g_direct"]:
-            out_features = 2
+            out_features = 3
         else:
             raise ValueError(f"Unknown mode '{mode}'")
 
@@ -170,72 +198,83 @@ class SH_SIREN(nn.Module):
         )
 
     def forward(self, lon, lat, return_gradients=False, r=None):
-
+        """
+        lon, lat in degrees (as before)
+        r in meters (radius). If you have altitude h, pass r = R + h.
+        return_radial:
+            if True, include dU/dr in returned gradients (when return_gradients=True)
+        """
         net_device = next(self.siren.parameters()).device
+
+        if r is None:
+            # if you still run on reference sphere
+            r = torch.full_like(lon, fill_value=self.r_scale)
 
         if self.mode == "U":
             if return_gradients:
                 with torch.set_grad_enabled(True):
                     lon = lon.to(net_device).requires_grad_(True)
                     lat = lat.to(net_device).requires_grad_(True)
+                    r = r.to(net_device).requires_grad_(True)
 
-                    Y = self.embedding(lon, lat)
-                    Y = Y.to(net_device)
+                    X = self.embedding(lon, lat, r)  # NEW
+                    outputs = self.siren(X)
 
-                    outputs = self.siren(Y)
-
+                    inputs = [lon, lat, r]
                     grads = torch.autograd.grad(
                         outputs=outputs,
-                        inputs=[lon, lat],
+                        inputs=inputs,
                         grad_outputs=torch.ones_like(outputs),
                         create_graph=self.training,
                         retain_graph=self.training,
                         only_inputs=True
                     )
 
-                    dU_dlon, dU_dlat = -grads[0], -grads[1]
-                    return outputs, (dU_dlon, dU_dlat)
-            else:
-                lon = lon.to(net_device)
-                lat = lat.to(net_device)
+                    g_theta = -grads[1]
+                    g_phi = -grads[0]
+                    g_r = -grads[2]
 
-                Y = self.embedding(lon, lat)
-                Y = Y.to(net_device)
+                    return outputs, (g_theta, g_phi, g_r)
 
-                return self.siren(Y)
+            lon = lon.to(net_device)
+            lat = lat.to(net_device)
+            r = r.to(net_device)
+            X = self.embedding(lon, lat, r)
+            return self.siren(X)
 
         elif self.mode == "g_direct":
             lon = lon.to(net_device)
             lat = lat.to(net_device)
-
-            Y = self.embedding(lon, lat)
-            Y = Y.to(net_device)
-
-            return self.siren(Y)
+            r = r.to(net_device)
+            X = self.embedding(lon, lat, r)
+            return self.siren(X)
 
         elif self.mode == "g_indirect":
             with torch.set_grad_enabled(True):
                 lon = lon.to(net_device).requires_grad_(True)
                 lat = lat.to(net_device).requires_grad_(True)
+                r = r.to(net_device).requires_grad_(True)
 
-                Y = self.embedding(lon, lat)
-                Y = Y.to(net_device)
+                X = self.embedding(lon, lat, r)
+                U = self.siren(X)  # potential
 
-                outputs = self.siren(Y)
-
+                inputs = [lon, lat, r]
                 grads = torch.autograd.grad(
-                    outputs=outputs,
-                    inputs=[lon, lat],
-                    grad_outputs=torch.ones_like(outputs),
+                    outputs=U,
+                    inputs=inputs,
+                    grad_outputs=torch.ones_like(U),
                     create_graph=self.training,
                     retain_graph=self.training,
                     only_inputs=True
                 )
 
+                # what you called g_theta/g_phi before (still same mapping)
                 g_theta = -grads[1]
                 g_phi = -grads[0]
+                g_r = -grads[2]
 
-                return outputs, (g_theta, g_phi)
+                return U, (g_theta, g_phi, g_r)
+
         else:
             raise ValueError(f"Unsupported mode '{self.mode}'")
 
@@ -253,8 +292,7 @@ class SH_LINEAR(nn.Module):
         cache_path=None,
         scaler=None,
         mode="U",
-        first_omega_0=None,
-        hidden_omega_0=None,
+        r_scale=6378136.6,
         **kwargs
     ):
         super().__init__()
@@ -266,8 +304,9 @@ class SH_LINEAR(nn.Module):
         self.normalization = normalization
         self.out_features = int(out_features)
         self.cache_path = cache_path
+        self.r_scale = float(r_scale)
 
-        self.embedding = SHEmbedding(
+        base_emb = SHEmbedding(
             lmax=lmax,
             normalization=normalization,
             cache_path=cache_path,
@@ -276,14 +315,21 @@ class SH_LINEAR(nn.Module):
             exclude_degrees=exclude_degrees
         )
 
-        if lmax > 0 and self.embedding.use_theta_lut:
-            self.embedding.build_theta_lut()
+        if lmax > 0 and base_emb.use_theta_lut:
+            base_emb.build_theta_lut()
 
+        # NEW: append rho=r/R
+        self.embedding = SHPlusR(base_emb, R_ref=self.r_scale)
+
+        # infer in_features
         if lmax == 0:
-            in_features = 2
+            in_features = 3  # [lon_norm, lat_norm, rho]
         else:
-            Y_dummy = self.embedding(torch.tensor([0.0]), torch.tensor([0.0]))
-            in_features = Y_dummy.shape[1]
+            dummy_lon = torch.tensor([0.0])
+            dummy_lat = torch.tensor([0.0])
+            dummy_r   = torch.tensor([self.r_scale])
+            X_dummy = self.embedding(dummy_lon, dummy_lat, dummy_r)
+            in_features = X_dummy.shape[1]
 
         if mode in ["U", "g_indirect"]:
             out_dim = 1
@@ -300,6 +346,15 @@ class SH_LINEAR(nn.Module):
         )
 
     def forward(self, lon, lat, return_gradients=False, r=None):
+        """
+        lon, lat in degrees
+        r in meters (radius). If you have altitude h, pass r = R + h.
+
+        return_radial:
+            if True and return_gradients=True, also return dU/dr (or -dU/dr depending on sign below).
+        """
+        if r is None:
+            r = torch.full_like(lon, fill_value=self.r_scale)
 
         if self.mode == "U":
 
@@ -307,64 +362,80 @@ class SH_LINEAR(nn.Module):
                 with torch.set_grad_enabled(True):
                     lon = lon.to(self.device).requires_grad_(True)
                     lat = lat.to(self.device).requires_grad_(True)
+                    r   = r.to(self.device).requires_grad_(True)
 
-                    Y = self.embedding(lon, lat).to(self.device)
-                    outputs = self.net(Y)
+                    X = self.embedding(lon, lat, r).to(self.device)
+                    outputs = self.net(X)
 
+                    inputs = [lon, lat, r]
                     grads = torch.autograd.grad(
                         outputs=outputs,
-                        inputs=[lon, lat],
+                        inputs=inputs,
                         grad_outputs=torch.ones_like(outputs),
                         create_graph=self.training,
                         retain_graph=self.training,
                         only_inputs=True
                     )
 
-                    dU_dlon, dU_dlat = -grads[0], -grads[1]
-                    return outputs, (dU_dlon, dU_dlat)
+                    g_theta = -grads[1]
+                    g_phi = -grads[0]
+                    g_r = -grads[2]
 
-            else:
-                Y = self.embedding(lon, lat).to(self.device)
-                return self.net(Y)
+                    return outputs, (g_theta, g_phi, g_r)
+
+            lon = lon.to(self.device)
+            lat = lat.to(self.device)
+            r   = r.to(self.device)
+
+            X = self.embedding(lon, lat, r).to(self.device)
+            return self.net(X)
 
         elif self.mode == "g_direct":
-            Y = self.embedding(lon, lat).to(self.device)
-            return self.net(Y)
+            lon = lon.to(self.device)
+            lat = lat.to(self.device)
+            r   = r.to(self.device)
+
+            X = self.embedding(lon, lat, r).to(self.device)
+            return self.net(X)
 
         elif self.mode == "g_indirect":
             with torch.set_grad_enabled(True):
                 lon = lon.to(self.device).requires_grad_(True)
                 lat = lat.to(self.device).requires_grad_(True)
+                r   = r.to(self.device).requires_grad_(True)
 
-                Y = self.embedding(lon, lat).to(self.device)
-                U_pred = self.net(Y)
+                X = self.embedding(lon, lat, r).to(self.device)
+                U_pred = self.net(X)
 
+                inputs = [lon, lat, r]
                 grads = torch.autograd.grad(
                     outputs=U_pred,
-                    inputs=[lon, lat],
+                    inputs=inputs,
                     grad_outputs=torch.ones_like(U_pred),
                     create_graph=self.training,
                     retain_graph=self.training,
                     only_inputs=True,
                 )
+
                 g_theta = -grads[1]
-                g_phi = -grads[0]
+                g_phi   = -grads[0]
+                g_r = -grads[2]
 
-                return U_pred, (g_theta, g_phi)
-
+                return U_pred, (g_theta, g_phi, g_r)
 
         else:
             raise ValueError(f"Unsupported mode '{self.mode}'")
 
-# Class to replicate Martin & Schaub's (2022) architecture
+# Class to replicate Martin & Schaub's (2022) architecture, with some modifications
 
 class PINN(nn.Module):
     """
-    PINN with raw lon/lat input (degrees), scaled inside using PINNScaler.scale_coords.
-    Supports modes:
-      - "U":         predict potential only
-      - "g_direct":  predict (g_theta, g_phi) directly
-      - "g_indirect":predict U and derive g = -∇U (w.r.t. scaled coords)
+    PINN that takes (lon, lat, r) as inputs.
+    Scaling is done in torch so autograd can give derivatives w.r.t lon/lat/r.
+    Conventions:
+      - Returns U_neg = -U_raw
+      - Always returns derivatives wrt (lon, lat, r)
+      - g ordering: (g_theta (lat), g_phi (lon), g_r)
     """
 
     def __init__(
@@ -372,24 +443,24 @@ class PINN(nn.Module):
         hidden_features=128,
         hidden_layers=4,
         device="cuda",
-        scaler=None,     # PINNScaler
+        scaler=None,     # PINNScaler (for output scaling if you want; input scaling done here)
         mode="g_indirect",
+        r_scale=6378136.6,
     ):
         super().__init__()
         self.device = device
         self.scaler = scaler
         self.mode = mode
-
-        if self.scaler is None or not hasattr(self.scaler, "scale_coords"):
-            raise ValueError("PINN requires a scaler with a .scale_coords(...) method.")
+        self.r_scale = float(r_scale)
 
         if mode not in ["U", "g_direct", "g_indirect"]:
             raise ValueError(f"Unsupported PINN mode: {mode}")
 
-        out_features = 1 if mode in ["U", "g_indirect"] else 2
+        out_features = 1 if mode in ["U", "g_indirect"] else 3  # if g_direct now includes gr
+        # If you still want g_direct only (g_theta,g_phi), set out_features=2 and ignore gr.
 
         self.net = GELUNet(
-            in_features=2,
+            in_features=3,  # lon_s, lat_s, rho
             hidden_features=hidden_features,
             hidden_layers=hidden_layers,
             out_features=out_features,
@@ -397,68 +468,73 @@ class PINN(nn.Module):
 
         self.to(self.device)
 
-    def _scale_lonlat(self, lon, lat):
+    def _scale_inputs(self, lon_deg, lat_deg, r_m):
         """
-        lon, lat: raw degrees (Tensor).
-        returns scaled lon/lat (Tensor), e.g. radians.
-        """
-        lon = lon.to(self.device)
-        lat = lat.to(self.device)
+        Differentiable scaling in torch.
+        lon_deg, lat_deg in degrees
+        r_m in meters (radius)
 
-        lonlat = torch.stack([lon, lat], dim=-1)              # (N,2)
-        lonlat_np = lonlat.detach().cpu().numpy()             # scaler is numpy-based
-        lonlat_scaled_np = self.scaler.scale_coords(lonlat_np)
-
-        lonlat_scaled = torch.as_tensor(
-            lonlat_scaled_np, dtype=lon.dtype, device=self.device
-        )
-        return lonlat_scaled[..., 0], lonlat_scaled[..., 1]
-
-    def forward(self, lon, lat, return_gradients=False):
-        """
         Returns:
-          - mode "U":
-                if return_gradients: (U, grads) where grads=(dU/dlon_s, dU/dlat_s)
-                else: U
-          - mode "g_direct":
-                g = (g_theta, g_phi) directly (shape Nx2)
-          - mode "g_indirect":
-                (U, (g_theta, g_phi)) where g = -∇U in scaled coord space
+          lon_s, lat_s, rho
         """
-        lon_s, lat_s = self._scale_lonlat(lon, lat)
+        lon_deg = lon_deg.to(self.device).float()
+        lat_deg = lat_deg.to(self.device).float()
+        r_m     = r_m.to(self.device).float()
+
+        deg2rad = torch.pi / 180.0
+        lon_rad = lon_deg * deg2rad
+        lat_rad = lat_deg * deg2rad
+
+        # uniform angular scale (matches your PINNScaler idea)
+        lon_s = lon_rad / torch.pi
+        lat_s = lat_rad / torch.pi
+
+        rho = r_m / self.r_scale
+
+        return lon_s, lat_s, rho
+
+    def forward(self, lon, lat, r):
+        """
+        Always returns:
+          - U_neg (Nx1) for modes U/g_indirect, or g_pred (Nx3) for g_direct
+          - derivatives wrt raw lon/lat/r: (dU_dlon, dU_dlat, dU_dr)
+          - and for g_indirect also (g_theta, g_phi, g_r) in requested order
+
+        Note: derivatives are w.r.t raw lon/lat in DEGREES and r in METERS.
+        """
+        # scale inputs (but keep raw vars for grads)
+        lon = lon.to(self.device).float().requires_grad_(True)
+        lat = lat.to(self.device).float().requires_grad_(True)
+        r   = r.to(self.device).float().requires_grad_(True)
+
+        lon_s, lat_s, rho = self._scale_inputs(lon, lat, r)
 
         if self.mode == "g_direct":
-            x = torch.stack([lon_s, lat_s], dim=-1)
-            g_pred = self.net(x)  # Nx2 (scaled accel domain)
+            x = torch.stack([lon_s, lat_s, rho], dim=-1)
+            g_pred = self.net(x)  # Nx3: (g_theta, g_phi, g_r) in whatever convention you train
+            # If you train only 2 components, change out_features and return Nx2.
             return g_pred
 
-        # For U and g_indirect we may need grads
-        with torch.set_grad_enabled(True):
-            lon_s = lon_s.requires_grad_(True)
-            lat_s = lat_s.requires_grad_(True)
+        # U and g_indirect: compute U and derivatives
+        x = torch.stack([lon_s, lat_s, rho], dim=-1)
+        U_raw = self.net(x)          # Nx1
 
-            x = torch.stack([lon_s, lat_s], dim=-1)
-            U_pred = self.net(x)  # Nx1
+        grads = torch.autograd.grad(
+            outputs=U_raw,
+            inputs=[lon, lat, r],
+            grad_outputs=torch.ones_like(U_raw),
+            create_graph=self.training,
+            retain_graph=self.training,
+            only_inputs=True,
+        )
+        dU_dlon, dU_dlat, dU_dr = grads  # derivatives w.r.t (deg, deg, m)
 
-            grads = torch.autograd.grad(
-                outputs=U_pred,
-                inputs=[lon_s, lat_s],
-                grad_outputs=torch.ones_like(U_pred),
-                create_graph=self.training,
-                retain_graph=self.training,
-                only_inputs=True,
-            )
-            dU_dlon, dU_dlat = -grads[0], -grads[1]
+        # Accelerations from U_neg: g = -∇U_neg
+        g_theta = -dU_dlat   # lat
+        g_phi   = -dU_dlon   # lon
+        g_r     = -dU_dr     # radial
 
-            if self.mode == "U":
-                if return_gradients:
-                    return U_pred, (dU_dlon, dU_dlat)
-                return U_pred
-
-            # g_indirect: g = -∇U
-            g_theta = dU_dlat
-            g_phi   = dU_dlon
-            return U_pred, (g_theta, g_phi)
+        return U_raw, (g_theta, g_phi, g_r)
 
 class Gravity(pl.LightningModule):
     def __init__(self, model_cfg, scaler, lr=1e-4):
@@ -487,30 +563,33 @@ class Gravity(pl.LightningModule):
             )
 
         self.scaler = scaler
-        self.lr = lr
-
-        self.scaler = scaler
         self.criterion = nn.MSELoss()
         self.lr = lr
 
-    def forward(self, lon, lat):
-        return self.model(lon, lat)
+    def forward(self, lon, lat, r):
+        return self.model(lon, lat, r)
 
     def _compute_loss(self, y_pred, y_true, return_components=False):
+
+        if isinstance(y_pred, tuple):
+            y_pred = y_pred[0]
+        if isinstance(y_true, tuple):
+            y_true = y_true[0]
 
         if self.mode == "U":
             loss = self.criterion(y_pred.view(-1), y_true.view(-1))
             return (loss, None, None, None, loss) if return_components else loss
 
+
         elif self.mode == "g_direct":
-            loss = self.criterion(y_pred.view(-1), y_true.view(-1))
+            loss = self.criterion(y_pred, y_true)
             return (None, loss, None, None, loss) if return_components else loss
 
+
         elif self.mode == "g_indirect":
-            U_pred, (g_theta, g_phi) = y_pred
-            g_pred = torch.stack([g_theta, g_phi], dim=1)
-            loss = self.criterion(g_pred.view(-1), y_true.view(-1))
-            loss = loss
+            U_pred, g_tuple = y_pred
+            g_pred = torch.stack(g_tuple, dim=1)
+            loss = self.criterion(g_pred, y_true)
             return (None, loss, None, None, loss) if return_components else loss
 
         else:
@@ -519,8 +598,8 @@ class Gravity(pl.LightningModule):
 
     def training_step(self, batch, batch_idx=None):
 
-        lon_b, lat_b, y_true_b = [b.to(self.device) for b in batch]
-        y_pred_b = self.model(lon_b, lat_b)
+        lon_b, lat_b, r_b, y_true_b = [b.to(self.device) for b in batch]
+        y_pred_b = self.model(lon_b, lat_b, r_b)
 
         loss_components = self._compute_loss(y_pred_b, y_true_b, return_components=True)
 
@@ -543,8 +622,8 @@ class Gravity(pl.LightningModule):
         return total_loss
 
     def validation_step(self, batch, batch_idx=None):
-        lon_b, lat_b, y_true_b = [b.to(self.device) for b in batch]
-        y_pred_b = self.model(lon_b, lat_b)
+        lon_b, lat_b, r_b, y_true_b = [b.to(self.device) for b in batch]
+        y_pred_b = self.model(lon_b, lat_b, r_b)
 
         loss_components = self._compute_loss(y_pred_b, y_true_b, return_components=True)
 

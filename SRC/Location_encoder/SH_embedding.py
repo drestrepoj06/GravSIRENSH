@@ -102,7 +102,7 @@ class SHEmbedding:
 
     def forward(self, lon, lat):
         """
-        If use_theta_lut=True -> differentiableaa wrt lat via LUT interpolation."""
+        If use_theta_lut=True -> differentiable wrt lat via LUT interpolation."""
 
         lon = lon.float()
         lat = lat.float()
@@ -192,5 +192,16 @@ class SHEmbedding:
                 Y[:, start + l + 1:start + l + 1 + l] = cos_amp * cos_trig
 
         return Y
+    __call__ = forward
+
+class SHPlusR:
+    def __init__(self, sh: SHEmbedding, R_ref: float = 6378136.6):
+            self.sh = sh
+            self.R_ref = float(R_ref)
+
+    def forward(self, lon, lat, r):
+            Y = self.sh(lon, lat)  # (N, S)
+            rho = (r.float() / self.R_ref).unsqueeze(-1)  # (N, 1)
+            return torch.cat([Y, rho], dim=-1)
 
     __call__ = forward

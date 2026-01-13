@@ -331,7 +331,7 @@ def main():
 
     generator_train.generate_uniform_altitude_file(
             max_alt_m=max_altitude,
-            n_alt_shells=2,
+            n_alt_shells=43,
             seed=42,
     )
 
@@ -346,7 +346,7 @@ def main():
 
     generator_test.generate_uniform_altitude_file(
             max_alt_m=max_altitude,
-            n_alt_shells=2,
+            n_alt_shells=43,
             seed=123,
     )
 

@@ -19,12 +19,16 @@ from SRC.Visualizations.Geographic_plots import GravityDataPlotter
 
 
 class GravityDataset(torch.utils.data.Dataset):
-    def __init__(self, df, scaler, mode="g_direct", include_radial=False):
+    def __init__(self, df, scaler, mode="g_direct", r_scale=6378136.6):
         self.mode = mode
         self.scaler = scaler
+        self.r_scale = float(r_scale)
 
         self.lon = torch.tensor(df["lon"].values, dtype=torch.float32)
         self.lat = torch.tensor(df["lat"].values, dtype=torch.float32)
+
+        alt = torch.tensor(df["altitude_m"].values, dtype=torch.float32)
+        self.r = self.r_scale + alt  # meters (radius)
 
         def _scale_g(g_phys):
             # SH scaler path
@@ -43,15 +47,13 @@ class GravityDataset(torch.utils.data.Dataset):
             self.y = torch.tensor(U_scaled, dtype=torch.float32).unsqueeze(1)
 
         elif mode in ["g_direct"]:
-            cols = ["dg_theta_mGal", "dg_phi_mGal"]
-            if include_radial:
-                cols = ["dg_r_mGal"] + cols
+            cols = ["dg_theta_mGal", "dg_phi_mGal", "dg_r_mGal"]
             g_phys = df[cols].values
             g_scaled = _scale_g(g_phys)
             self.y = torch.tensor(g_scaled, dtype=torch.float32)
 
         elif mode == "g_indirect":
-            cols = ["dg_theta_mGal", "dg_phi_mGal"]
+            cols = ["dg_theta_mGal", "dg_phi_mGal", "dg_r_mGal"]
             g_phys = df[cols].values
             g_scaled = _scale_g(g_phys)
             self.y = torch.tensor(g_scaled, dtype=torch.float32)
@@ -62,7 +64,7 @@ class GravityDataset(torch.utils.data.Dataset):
         return len(self.lon)
 
     def __getitem__(self, idx):
-        return self.lon[idx], self.lat[idx], self.y[idx]
+        return self.lon[idx], self.lat[idx], self.r[idx], self.y[idx]
 
 
 class GravityDataModule(pl.LightningDataModule):
@@ -88,7 +90,7 @@ class GravityDataModule(pl.LightningDataModule):
 
 def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    data_path = os.path.join(base_dir, 'Data', 'Samples_2190-2_5.0M_r0_train.parquet')
+    data_path = os.path.join(base_dir, 'Data', 'Samples_2190-2_5.0M_altUniform0-420000_train_shells_43_interp.parquet')
 
     df = pd.read_parquet(data_path)
     val_df = df.sample(n=500_000, random_state=42)
@@ -282,33 +284,33 @@ def main():
     print(f"\nModel saved at: {model_path}")
     print(f"Config saved at: {config_path}")
 
-    data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_r0_test.parquet")
-    test_script.main(run_path=run_dir)
-
-    PLOTS_BY_MODE = {
-        "U": ["potential", "acceleration"],
-        "g_indirect": ["potential", "acceleration"],
-        "g_direct": ["acceleration"]
-    }
-
-    targets_to_plot = PLOTS_BY_MODE.get(mode, None)
-
-    if targets_to_plot is None:
-        print(f"Mode '{mode}' not recognized for plotting.")
-    else:
-        for target in targets_to_plot:
-            print(f"Plotting {target} maps...")
-
-            plotter = GravityDataPlotter(
-                data_path=data_path,
-                output_dir=run_dir,
-                predictions_dir=run_dir,
-                linear_dir=run_dir,
-                target_type=target
-            )
-
-            plotter.plot_map()
-            plotter.plot_scatter()
+    # data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_r0_test.parquet")
+    # test_script.main(run_path=run_dir)
+    #
+    # PLOTS_BY_MODE = {
+    #     "U": ["potential", "acceleration"],
+    #     "g_indirect": ["potential", "acceleration"],
+    #     "g_direct": ["acceleration"]
+    # }
+    #
+    # targets_to_plot = PLOTS_BY_MODE.get(mode, None)
+    #
+    # if targets_to_plot is None:
+    #     print(f"Mode '{mode}' not recognized for plotting.")
+    # else:
+    #     for target in targets_to_plot:
+    #         print(f"Plotting {target} maps...")
+    #
+    #         plotter = GravityDataPlotter(
+    #             data_path=data_path,
+    #             output_dir=run_dir,
+    #             predictions_dir=run_dir,
+    #             linear_dir=run_dir,
+    #             target_type=target
+    #         )
+    #
+    #         plotter.plot_map()
+    #         plotter.plot_scatter()
 
 if __name__ == "__main__":
     import multiprocessing as mp
