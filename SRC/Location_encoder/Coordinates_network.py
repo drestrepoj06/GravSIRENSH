@@ -157,6 +157,7 @@ class SH_SIREN(nn.Module):
         self.normalization = normalization
         self.out_features = int(out_features)
         self.cache_path = cache_path
+        self.r_scale = 6378136.6
 
         base_emb = SHEmbedding(
             lmax=lmax,
@@ -197,7 +198,7 @@ class SH_SIREN(nn.Module):
             hidden_omega_0=hidden_omega_0,
         )
 
-    def forward(self, lon, lat, return_gradients=False, r=None):
+    def forward(self, lon, lat, r=None, return_gradients=False):
         """
         lon, lat in degrees (as before)
         r in meters (radius). If you have altitude h, pass r = R + h.
@@ -345,7 +346,7 @@ class SH_LINEAR(nn.Module):
             out_features=out_dim
         )
 
-    def forward(self, lon, lat, return_gradients=False, r=None):
+    def forward(self, lon, lat, r=None, return_gradients=False):
         """
         lon, lat in degrees
         r in meters (radius). If you have altitude h, pass r = R + h.
@@ -529,10 +530,9 @@ class PINN(nn.Module):
         )
         dU_dlon, dU_dlat, dU_dr = grads  # derivatives w.r.t (deg, deg, m)
 
-        # Accelerations from U_neg: g = -∇U_neg
-        g_theta = -dU_dlat   # lat
-        g_phi   = -dU_dlon   # lon
-        g_r     = -dU_dr     # radial
+        g_theta = -dU_dlat
+        g_phi   = -dU_dlon
+        g_r     = -dU_dr
 
         return U_raw, (g_theta, g_phi, g_r)
 
@@ -542,9 +542,11 @@ class Gravity(pl.LightningModule):
 
         arch = model_cfg.pop("arch", "sirensh").lower()
 
+        self.mode = model_cfg.get("mode", "U")
+
         if arch == "sirensh":
             self.model = SH_SIREN(**model_cfg)
-            self.mode = model_cfg.get("mode", "U")
+            self.model.mode = self.mode
 
         elif arch == "linearsh":
             self.model = SH_LINEAR(**model_cfg)
@@ -567,14 +569,15 @@ class Gravity(pl.LightningModule):
         self.lr = lr
 
     def forward(self, lon, lat, r):
-        return self.model(lon, lat, r)
+        return self.model(lon, lat, r = r)
 
     def _compute_loss(self, y_pred, y_true, return_components=False):
 
-        if isinstance(y_pred, tuple):
-            y_pred = y_pred[0]
-        if isinstance(y_true, tuple):
-            y_true = y_true[0]
+        if self.mode in ("U", "g_direct"):
+            if isinstance(y_pred, (tuple, list)):
+                y_pred = y_pred[0]
+            if isinstance(y_true, (tuple, list)):
+                y_true = y_true[0]
 
         if self.mode == "U":
             loss = self.criterion(y_pred.view(-1), y_true.view(-1))
@@ -586,12 +589,24 @@ class Gravity(pl.LightningModule):
             return (None, loss, None, None, loss) if return_components else loss
 
 
+
+
         elif self.mode == "g_indirect":
-            U_pred, g_tuple = y_pred
-            g_pred = torch.stack(g_tuple, dim=1)
+            if isinstance(y_pred, (tuple, list)):
+                if len(y_pred) == 2:
+                    U_pred, g_tuple = y_pred
+                elif len(y_pred) in (3, 4):
+                    U_pred = y_pred[0]
+                    g_tuple = y_pred[1:]
+                else:
+                    raise ValueError(f"Unexpected y_pred length: {len(y_pred)}")
+            else:
+                raise ValueError("g_indirect expects tuple output")
+            g_pred = torch.stack(list(g_tuple), dim=1)
+            if isinstance(y_true, (tuple, list)):
+                y_true = y_true[0]
             loss = self.criterion(g_pred, y_true)
             return (None, loss, None, None, loss) if return_components else loss
-
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
 
@@ -600,7 +615,6 @@ class Gravity(pl.LightningModule):
 
         lon_b, lat_b, r_b, y_true_b = [b.to(self.device) for b in batch]
         y_pred_b = self.model(lon_b, lat_b, r_b)
-
         loss_components = self._compute_loss(y_pred_b, y_true_b, return_components=True)
 
         total_loss = loss_components[-1]
@@ -623,7 +637,12 @@ class Gravity(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx=None):
         lon_b, lat_b, r_b, y_true_b = [b.to(self.device) for b in batch]
-        y_pred_b = self.model(lon_b, lat_b, r_b)
+        lon_b = lon_b.detach().requires_grad_(True)
+        lat_b = lat_b.detach().requires_grad_(True)
+        r_b = r_b.detach().requires_grad_(True)
+
+        with torch.enable_grad():
+            y_pred_b = self.model(lon_b, lat_b, r_b)
 
         loss_components = self._compute_loss(y_pred_b, y_true_b, return_components=True)
 
