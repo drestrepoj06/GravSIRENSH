@@ -267,9 +267,7 @@ class GravityDataGenerator:
                 dg_theta_hi[sel] = dg_theta_vals[is_hi]
                 dg_phi_hi[sel] = dg_phi_vals[is_hi]
 
-        # ------------------------------------------------------------
-        # 6) Interpolate to true altitude
-        # ------------------------------------------------------------
+
         dU_out = (dU_lo + alpha * (dU_hi - dU_lo)).astype("float32")
         dg_r_out = (dg_r_lo + alpha * (dg_r_hi - dg_r_lo)).astype("float32")
         dg_theta_out = (dg_theta_lo + alpha * (dg_theta_hi - dg_theta_lo)).astype("float32")
@@ -277,9 +275,6 @@ class GravityDataGenerator:
 
         dg_total_out = np.sqrt(dg_r_out ** 2 + dg_theta_out ** 2 + dg_phi_out ** 2).astype("float32")
 
-        # ------------------------------------------------------------
-        # 7) Save
-        # ------------------------------------------------------------
         r0 = float(self.r0)
         radius = (r0 + altitude).astype("float32")
 

@@ -335,7 +335,7 @@ class SH_LINEAR(nn.Module):
         if mode in ["U", "g_indirect"]:
             out_dim = 1
         elif mode == "g_direct":
-            out_dim = 2
+            out_dim = 3
         else:
             raise ValueError(f"Unknown mode '{mode}'")
 

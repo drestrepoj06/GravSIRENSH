@@ -99,7 +99,7 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "g_direct"
+    mode = "U"
     lr = 5e-3
     batch_size = 262144
     lmax = 3
@@ -109,7 +109,7 @@ def main():
     hidden_omega_0 = 1.0
     exclude_degrees = None
     epochs = 1
-    arch = "linearsh"  # "sirensh, linearsh or pinn"
+    arch = "sirensh"  # "sirensh, linearsh or pinn"
 
     if arch == "pinn":
         base_scaler = Scaler(mode=mode).fit(train_df)
@@ -284,8 +284,9 @@ def main():
     print(f"\nModel saved at: {model_path}")
     print(f"Config saved at: {config_path}")
 
-    # data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_r0_test.parquet")
-    # test_script.main(run_path=run_dir)
+    data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_altUniform0-420000_test_shells_43_interp.parquet")
+    test_script.main(run_path=run_dir)
+
     #
     # PLOTS_BY_MODE = {
     #     "U": ["potential", "acceleration"],

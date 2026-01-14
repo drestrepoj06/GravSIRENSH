@@ -18,7 +18,7 @@ def main(run_path=None):
     runs_dir = os.path.join(base_dir, "Outputs", "Runs")
     data_dir = os.path.join(base_dir, "Data")
 
-    test_path = os.path.join(data_dir, "Samples_2190-2_250k_r0_test.parquet")
+    test_path = os.path.join(data_dir, "Samples_2190-2_250k_altUniform0-420000_test_shells_43_interp.parquet")
     test_df = pd.read_parquet(test_path)
 
     mask = np.abs(test_df["lat"].values) < 89.9999
@@ -145,31 +145,33 @@ def main(run_path=None):
     model = model.to(device)
     model.eval()
 
-    def build_tensors_from_df(df, device):
+    def build_tensors_from_df(df, device, r_scale):
         lon = torch.tensor(df["lon"].values, dtype=torch.float32, device=device)
         lat = torch.tensor(df["lat"].values, dtype=torch.float32, device=device)
+        r = r_scale + torch.tensor(df["altitude_m"].values, dtype=torch.float32, device=device)
 
         true_U = torch.tensor(df["dU_m2_s2"].values, dtype=torch.float32, device=device)
         true_theta = torch.tensor(df["dg_theta_mGal"].values, dtype=torch.float32, device=device)
         true_phi = torch.tensor(df["dg_phi_mGal"].values, dtype=torch.float32, device=device)
+        true_r = torch.tensor(df["dg_r_mGal"].values, dtype=torch.float32, device=device)
         true_mag = torch.tensor(df["dg_total_mGal"].values, dtype=torch.float32, device=device)
 
-        return lon, lat, true_U, true_theta, true_phi, true_mag
+        return lon, lat, r, true_U, true_theta, true_phi, true_r, true_mag
 
-    lon_A, lat_A, U_A, theta_A, phi_A, mag_A = build_tensors_from_df(A, device)
-
-    lon_F, lat_F, U_F, theta_F, phi_F, mag_F = build_tensors_from_df(F, device)
-
-    lon_C, lat_C, U_C, theta_C, phi_C, mag_C = build_tensors_from_df(C, device)
+    lon_A, lat_A, r_A, U_A, theta_A, phi_A, rad_A, mag_A = build_tensors_from_df(A, device, 6378136.6)
+    lon_F, lat_F, r_F, U_F, theta_F, phi_F, rad_F, mag_F = build_tensors_from_df(F, device, 6378136.6)
+    lon_C, lat_C, r_C, U_C, theta_C, phi_C, rad_C, mag_C = build_tensors_from_df(C, device, 6378136.6)
 
     def evaluate_and_save_dataset(
             model,
             mode,
             lon,
             lat,
+            r,
             true_U,
             true_theta,
             true_phi,
+            true_r,
             true_mag,
             scaler,
             device,
@@ -196,9 +198,11 @@ def main(run_path=None):
             )
         lon = lon.to(device)
         lat = lat.to(device)
+        r = r.to(device)
 
         true_theta = true_theta.to(device)
         true_phi = true_phi.to(device)
+        true_r = true_r.to(device)  # <-- NEW
         true_mag = true_mag.to(device)
 
         if true_U is not None:
@@ -210,19 +214,21 @@ def main(run_path=None):
 
         if mode == "g_direct":
             with torch.no_grad():
-                preds = model(lon, lat)
+                preds = model(lon, lat, r)
             U_scaled, grads = None, None
 
         elif mode == "U":
             lon_req = lon.detach().clone().requires_grad_(True)
             lat_req = lat.detach().clone().requires_grad_(True)
-            U_scaled, grads = model(lon_req, lat_req, return_gradients=True)
+            r_req = r.detach().clone().requires_grad_(True)
+            U_scaled, grads = model(lon_req, lat_req, r_req, return_gradients=True)
             preds = None
 
         elif mode == "g_indirect":
             lon_req = lon.detach().clone().requires_grad_(True)
             lat_req = lat.detach().clone().requires_grad_(True)
-            U_scaled, grads = model(lon_req, lat_req)
+            r_req = r.detach().clone().requires_grad_(True)
+            U_scaled, grads = model(lon_req, lat_req, r_req)
             preds = None
 
         if device.type == "cuda":
@@ -240,22 +246,23 @@ def main(run_path=None):
             g_pred = unscale_g(scaler, preds).detach()
             g_theta = g_pred[:, 0]
             g_phi = g_pred[:, 1]
-            g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
+            g_r = g_pred[:, 2]  # <-- NEW
+            g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2 + g_r ** 2)  # <-- NEW
 
             U_pred = None
-            g_theta_grad = g_phi_grad = g_mag_grad = None
+            g_theta_grad = g_phi_grad = g_r_grad = g_mag_grad = None
+
 
         elif mode in ["U", "g_indirect"]:
-            U_pred = scaler.unscale_potential(U_scaled).detach()
 
+            U_pred = scaler.unscale_potential(U_scaled).detach()
             g_scaled = torch.stack(grads, dim=1)
             g_phys = unscale_g(scaler, g_scaled).detach()
-
             g_theta = g_phys[:, 0]
             g_phi = g_phys[:, 1]
-            g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2)
-
-            g_theta_grad = g_phi_grad = g_mag_grad = None
+            g_r = g_phys[:, 2]
+            g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2 + g_r ** 2)
+            g_theta_grad = g_phi_grad = g_r_grad = g_mag_grad = None
 
 
         else:
@@ -269,11 +276,12 @@ def main(run_path=None):
         if U_pred is not None and true_U is not None:
             rmse_U = torch.sqrt(torch.mean((U_pred.ravel() - true_U) ** 2)).item()
 
-        if g_theta is not None and g_phi is not None:
+        if g_theta is not None and g_phi is not None and g_r is not None:
             rmse_g = ((
-                    torch.mean((g_theta - true_theta) ** 2).item()
-                    + torch.mean((g_phi - true_phi) ** 2).item()
-            )**0.5)/1e5
+                              torch.mean((g_theta - true_theta) ** 2).item()
+                              + torch.mean((g_phi - true_phi) ** 2).item()
+                              + torch.mean((g_r - true_r) ** 2).item()
+                      ) ** 0.5) / 1e5
 
         results = {
             "rmse_U": rmse_U,
@@ -289,6 +297,7 @@ def main(run_path=None):
 
         np.save(f"{prefix}_g_theta.npy", g_theta.cpu().numpy())
         np.save(f"{prefix}_g_phi.npy", g_phi.cpu().numpy())
+        np.save(f"{prefix}_g_rad.npy", g_r.cpu().numpy())
         np.save(f"{prefix}_g_mag.npy", g_mag.cpu().numpy())
 
         if g_theta_grad is not None:
@@ -307,6 +316,7 @@ def main(run_path=None):
         pred_stats = {
             "g_theta": stats(g_theta.cpu().numpy()),
             "g_phi": stats(g_phi.cpu().numpy()),
+            "g_r": stats(g_r.cpu().numpy()),
             "g_mag": stats(g_mag.cpu().numpy()),
         }
 
@@ -321,6 +331,7 @@ def main(run_path=None):
         true_stats = {
             "g_theta": stats(true_theta.cpu().numpy()),
             "g_phi": stats(true_phi.cpu().numpy()),
+            "g_r": stats(true_r.cpu().numpy()),
             "g_mag": stats(true_mag.cpu().numpy()),
         }
 
@@ -331,8 +342,8 @@ def main(run_path=None):
 
     res_A, pred_A, true_A, timing_A = evaluate_and_save_dataset(
         model, mode,
-        lon_A, lat_A,
-        U_A, theta_A, phi_A, mag_A,
+        lon_A, lat_A, r_A,
+        U_A, theta_A, phi_A, rad_A, mag_A,
         scaler, device,
         latest_run,
         prefix_tag="A"
@@ -340,8 +351,8 @@ def main(run_path=None):
 
     res_F, pred_F, true_F, timing_F = evaluate_and_save_dataset(
         model, mode,
-        lon_F, lat_F,
-        U_F, theta_F, phi_F, mag_F,
+        lon_F, lat_F, r_F,
+        U_F, theta_F, phi_F, rad_F, mag_F,
         scaler, device,
         latest_run,
         prefix_tag="F"
@@ -349,8 +360,8 @@ def main(run_path=None):
 
     res_C, pred_C, true_C, timing_C = evaluate_and_save_dataset(
         model, mode,
-        lon_C, lat_C,
-        U_C, theta_C, phi_C, mag_C,
+        lon_C, lat_C, r_C,
+        U_C, theta_C, phi_C, rad_C, mag_C,
         scaler, device,
         latest_run,
         prefix_tag="C"
@@ -360,39 +371,45 @@ def main(run_path=None):
 
     lin_model = None
     lin_model_timing = None
-    lin_equiv_timing = None
 
     if gen.model is not None:
-        lin_model, lin_model_timing = gen.evaluate_on_test(
-            df_grid=gen.model["df_grid"],
-            dU_grid=gen.model["dU_grid"],
-            lats_grid=gen.model["lats"],
-            lons_grid=gen.model["lons"],
-            clm_full_g=gen.model["clm_full_g"],
-            clm_low_g=gen.model["clm_low_g"],
+        lin_model, lin_model_timing = gen.evaluate_on_test_points(
+            clm_full=gen.model["clm_full"],
+            clm_low=gen.model["clm_low"],
             r0=gen.model["r0"],
             L=gen.model["L"],
+            A_idx=A_idx, F_idx=F_idx, C_idx=C_idx,
             save=True,
             label="model",
-            A_idx=A_idx, F_idx=F_idx, C_idx=C_idx
         )
 
-    lin_equiv, lin_equiv_timing = gen.evaluate_on_test(
-        df_grid=gen.equiv["df_grid"],
-        dU_grid=gen.equiv["dU_grid"],
-        lats_grid=gen.equiv["lats"],
-        lons_grid=gen.equiv["lons"],
-        clm_full_g=gen.equiv["clm_full_g"],
-        clm_low_g=gen.equiv["clm_low_g"],
+    # equivalent-L baseline (always)
+    lin_equiv, lin_equiv_timing = gen.evaluate_on_test_points(
+        clm_full=gen.equiv["clm_full"],
+        clm_low=gen.equiv["clm_low"],
         r0=gen.equiv["r0"],
         L=gen.equiv["L"],
+        A_idx=A_idx, F_idx=F_idx, C_idx=C_idx,
         save=True,
         label="equiv",
-        A_idx=A_idx, F_idx=F_idx, C_idx=C_idx
+    )
+
+    lin_model_df = None
+    if gen.model is not None:
+        lin_model_df = gen.generate_linear_equiv_at_points(
+            L=gen.model["L"],
+            df_points=test_df,
+            label="model",  # ensure your function uses label in filename
+        )
+
+    lin_equiv_df = gen.generate_linear_equiv_at_points(
+        L=gen.equiv["L"],
+        df_points=test_df,
+        label="equiv",
     )
 
     def evaluate_linear_baseline(paths, subset, run_path,
-                                 true_U, true_theta, true_phi):
+                                 true_U, true_theta, true_phi, true_r):
 
         def stats(arr):
             return {
@@ -418,30 +435,37 @@ def main(run_path=None):
 
         theta_path = os.path.join(run_path, paths["theta"].format(subset=subset))
         phi_path = os.path.join(run_path, paths["phi"].format(subset=subset))
+        r_path = os.path.join(run_path, paths["rad"].format(subset=subset))
 
         if not (os.path.exists(theta_path) and os.path.exists(phi_path)):
             return None
 
         lin_theta = np.load(theta_path)
         lin_phi = np.load(phi_path)
+        lin_r = np.load(r_path)
 
-        rmse_theta = float(np.sqrt(np.mean((lin_theta - true_theta) ** 2)))
-        rmse_phi = float(np.sqrt(np.mean((lin_phi - true_phi) ** 2)))
 
-        subset_results["rmse_g"] = float((rmse_theta + rmse_phi)/1e5)
+        subset_results["rmse_g"] = float(np.sqrt(np.mean((lin_theta-true_theta)**2) + np.mean((lin_phi-true_phi)**2) + np.mean((lin_r-true_r)**2)) / 1e5)
         subset_results["stats"] = {
             "theta": stats(lin_theta),
-            "phi": stats(lin_phi)
+            "phi": stats(lin_phi),
+            "rad": stats(lin_r)
         }
         return subset_results
 
     linear_paths = {
         "U_model": {"U": "linear_U_{subset}_model.npy"},
         "U_equiv": {"U": "linear_U_{subset}_equiv.npy"},
-        "g_model": {"theta": "linear_g_theta_{subset}_model.npy",
-                    "phi": "linear_g_phi_{subset}_model.npy"},
-        "g_equiv": {"theta": "linear_g_theta_{subset}_equiv.npy",
-                    "phi": "linear_g_phi_{subset}_equiv.npy"},
+        "g_model": {
+            "theta": "linear_g_theta_{subset}_model.npy",
+            "phi": "linear_g_phi_{subset}_model.npy",
+            "rad": "linear_g_r_{subset}_model.npy"
+        },
+        "g_equiv": {
+            "theta": "linear_g_theta_{subset}_equiv.npy",
+            "phi": "linear_g_phi_{subset}_equiv.npy",
+            "rad": "linear_g_r_{subset}_equiv.npy"
+        },
     }
     linear_results = {}
 
@@ -455,6 +479,7 @@ def main(run_path=None):
             true_U=A["dU_m2_s2"].to_numpy() if "U" in paths else None,
             true_theta=A["dg_theta_mGal"].to_numpy(),
             true_phi=A["dg_phi_mGal"].to_numpy(),
+            true_r=A["dg_r_mGal"].to_numpy()
         )
 
         linear_results[label]["F"] = evaluate_linear_baseline(
@@ -464,6 +489,7 @@ def main(run_path=None):
             true_U=F["dU_m2_s2"].to_numpy() if "U" in paths else None,
             true_theta=F["dg_theta_mGal"].to_numpy(),
             true_phi=F["dg_phi_mGal"].to_numpy(),
+            true_r=F["dg_r_mGal"].to_numpy()
         )
 
         linear_results[label]["C"] = evaluate_linear_baseline(
@@ -473,6 +499,7 @@ def main(run_path=None):
             true_U=C["dU_m2_s2"].to_numpy() if "U" in paths else None,
             true_theta=C["dg_theta_mGal"].to_numpy(),
             true_phi=C["dg_phi_mGal"].to_numpy(),
+            true_r=C["dg_r_mGal"].to_numpy()
         )
 
     meta = {
@@ -495,13 +522,13 @@ def main(run_path=None):
 
         "timing": {
             "linear": {
-                "A": {
-                    "equiv": lin_equiv_timing,
-                    "model": lin_model_timing if lin_model is not None else None
-                }
+                "equiv": lin_equiv_timing,
+                "model": lin_model_timing if lin_model is not None else None,
             },
             "nn": {
-                "A": timing_A
+                "A": timing_A,
+                "F": timing_F,
+                "C": timing_C,
             }
         }
     }
