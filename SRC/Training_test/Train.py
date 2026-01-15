@@ -99,7 +99,7 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "U"
+    mode = "g_indirect"
     lr = 5e-3
     batch_size = 262144
     lmax = 3
@@ -109,7 +109,7 @@ def main():
     hidden_omega_0 = 1.0
     exclude_degrees = None
     epochs = 1
-    arch = "sirensh"  # "sirensh, linearsh or pinn"
+    arch = "linearsh"  # "sirensh, linearsh or pinn"
 
     if arch == "pinn":
         base_scaler = Scaler(mode=mode).fit(train_df)
@@ -287,31 +287,50 @@ def main():
     data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_altUniform0-420000_test_shells_43_interp.parquet")
     test_script.main(run_path=run_dir)
 
-    #
-    # PLOTS_BY_MODE = {
-    #     "U": ["potential", "acceleration"],
-    #     "g_indirect": ["potential", "acceleration"],
-    #     "g_direct": ["acceleration"]
-    # }
-    #
-    # targets_to_plot = PLOTS_BY_MODE.get(mode, None)
-    #
-    # if targets_to_plot is None:
-    #     print(f"Mode '{mode}' not recognized for plotting.")
-    # else:
-    #     for target in targets_to_plot:
-    #         print(f"Plotting {target} maps...")
-    #
-    #         plotter = GravityDataPlotter(
-    #             data_path=data_path,
-    #             output_dir=run_dir,
-    #             predictions_dir=run_dir,
-    #             linear_dir=run_dir,
-    #             target_type=target
-    #         )
-    #
-    #         plotter.plot_map()
-    #         plotter.plot_scatter()
+    PLOTS_BY_MODE = {
+        "U": ["potential", "acceleration"],
+        "g_indirect": ["potential", "acceleration"],
+        "g_direct": ["acceleration"]
+    }
+
+    targets_to_plot = PLOTS_BY_MODE.get(mode, None)
+
+    # choose altitude slices you want maps for (example: low + high)
+    ALT_SLICES = [
+        dict(alt_center_m=10_000, alt_half_width_m=5_000),  # ~10 km ±5 km
+        dict(alt_center_m=400_000, alt_half_width_m=5_000),  # ~400 km ±10 km
+    ]
+
+    if targets_to_plot is None:
+        print(f"Mode '{mode}' not recognized for plotting.")
+    else:
+        for target in targets_to_plot:
+            print(f"Plotting {target} maps...")
+
+            plotter = GravityDataPlotter(
+                data_path=data_path,
+                output_dir=run_dir,
+                predictions_dir=run_dir,
+                linear_dir=run_dir,
+                target_type=target
+            )
+
+            # 1) Distribution map(s) + 2) Prediction/linear scatter maps for each altitude slice
+            for sl in ALT_SLICES:
+                plotter.plot_map(
+                    alt_center_m=sl["alt_center_m"],
+                    alt_half_width_m=sl["alt_half_width_m"]
+                )
+
+                plotter.plot_scatter_maps(
+                    alt_center_m=sl["alt_center_m"],
+                    alt_half_width_m=sl["alt_half_width_m"]
+                )
+
+            # 3) RMSE by altitude bins (no slicing; it *is* the altitude plot)
+            #    Do this once per target (and optionally per subset)
+            for subset in ["A", "F", "C"]:
+                plotter.plot_rmse_by_altitude(subset=subset)
 
 if __name__ == "__main__":
     import multiprocessing as mp

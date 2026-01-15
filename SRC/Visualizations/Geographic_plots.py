@@ -246,21 +246,33 @@ class GravityDataPlotter:
 
         self.has_predictions = True
 
-    def _make_grid(self, value_col):
+    def _make_grid(self, value_col, alt_center_m=None, alt_half_width_m=10_000):
         lon_grid = np.linspace(0, 360, 720)
         lat_grid = np.linspace(-90, 90, 361)
         Lon, Lat = np.meshgrid(lon_grid, lat_grid)
-        points = np.vstack((self.sample_df["lon"], self.sample_df["lat"])).T
-        values = self.sample_df[value_col]
+
+        df = self.sample_df
+        if alt_center_m is not None:
+            if "altitude_m" not in df.columns:
+                raise ValueError("sample_df must contain 'altitude_m' to grid by altitude.")
+            df = df[np.abs(df["altitude_m"].values - alt_center_m) <= alt_half_width_m].copy()
+
+        if len(df) < 5000:
+            raise ValueError(f"Not enough points in altitude slice to grid: n={len(df)}")
+
+        points = np.vstack((df["lon"].values, df["lat"].values)).T
+        values = df[value_col].values
+
         grid = griddata(points, values, (Lon, Lat), method="linear")
+
         mask = np.isnan(grid)
         if np.any(mask):
             grid[mask] = griddata(points, values, (Lon[mask], Lat[mask]), method="nearest")
+
         return Lon, Lat, grid
 
-
-    def plot_map(self, cmap="viridis"):
-        """Interpolated global map of the selected field."""
+    def plot_map(self, cmap="viridis", alt_center_m=None, alt_half_width_m=10_000):
+        """Interpolated global map of the selected field (optionally at an altitude slice)."""
         if self.target_type == "acceleration":
             value_col = "dg_total_mGal"
             unit = "mGal"
@@ -268,7 +280,12 @@ class GravityDataPlotter:
             value_col = "dU_m2_s2"
             unit = "m²/s²"
 
-        Lon, Lat, grid_total = self._make_grid(value_col)
+        Lon, Lat, grid_total = self._make_grid(
+            value_col,
+            alt_center_m=alt_center_m,
+            alt_half_width_m=alt_half_width_m,
+        )
+
         proj = ccrs.PlateCarree(central_longitude=180)
         fig, ax = plt.subplots(figsize=(13, 6), subplot_kw={"projection": proj})
         ax.set_global()
@@ -282,27 +299,41 @@ class GravityDataPlotter:
         im = ax.pcolormesh(Lon, Lat, grid_total, cmap=cmap, shading="auto", transform=ccrs.PlateCarree())
         cbar = plt.colorbar(im, ax=ax, orientation="horizontal", pad=0.08, aspect=50)
         cbar.set_label(unit)
-        ax.set_title(self._generate_title(), fontsize=13, pad=12)
+
+        title = self._generate_title()
+        if alt_center_m is not None:
+            title += f" — h≈{alt_center_m / 1000:.0f} km (±{alt_half_width_m / 1000:.0f} km)"
+        ax.set_title(title, fontsize=13, pad=12)
 
         suffix = f"{self._fname_suffix()}_{self.mode}_{self.target_type[:3]}"
+        if alt_center_m is not None:
+            suffix += f"_h{int(round(alt_center_m))}_dh{int(round(alt_half_width_m))}"
+
         output_filename = f"Map_{suffix}.png"
         output_path = os.path.join(self.output_dir, output_filename)
         plt.savefig(output_path, dpi=300, bbox_inches="tight")
         plt.close()
 
-    def _iter_subsets(self):
-        """Helper to iterate over subsets A/F/C."""
-        return ["A", "F", "C"]
-
-    def plot_scatter(self, color_by=None, s=0.5, alpha=0.8, cmap="viridis"):
+    def plot_scatter_maps(
+            self,
+            color_by=None,
+            s=0.5,
+            alpha=0.8,
+            cmap="viridis",
+            alt_center_m=None,
+            alt_half_width_m=10_000,
+            alt_range_m=None,
+    ):
         """
-        Subset-aware plotting:
-            - A (All)
-            - F (High-perturbation)
-            - C (Complement)
+        Scatter maps for A/F/C, optionally restricted to an altitude slice or range.
 
-        Generates maps + comparison + histograms per subset.
+        Use ONE of:
+          - alt_center_m + alt_half_width_m  (slice)
+          - alt_range_m=(min_m, max_m)       (range)
         """
+
+        if ("altitude_m" not in self.sample_df.columns) and (alt_center_m is not None or alt_range_m is not None):
+            raise ValueError("sample_df must include 'altitude_m' to filter by altitude.")
 
         # Determine true/pred columns based on target type
         if self.target_type == "acceleration":
@@ -310,47 +341,62 @@ class GravityDataPlotter:
             pred_col = "predicted_dg_total_mGal"
             unit = "mGal"
             symbol = "Δg"
-
         elif self.target_type == "gradients":
             true_col = "dg_total_mGal"
             pred_col = "predicted_g_mag_mGal"
             unit = "mGal"
             symbol = "Δg"
-
         else:
             true_col = "dU_m2_s2"
             pred_col = "predicted_dU_m2_s2"
             unit = "m²/s²"
             symbol = "ΔU"
 
-        for subset in ["A", "F", "C"]:
+        # Build a suffix for filenames/titles
+        alt_tag = ""
+        if alt_center_m is not None:
+            alt_tag = f"_h{int(round(alt_center_m / 1000))}km_dh{int(round(alt_half_width_m / 1000))}km"
+        elif alt_range_m is not None:
+            alt_tag = f"_h{int(round(alt_range_m[0] / 1000))}-{int(round(alt_range_m[1] / 1000))}km"
 
+        for subset in ["A", "F", "C"]:
             df = self.sample_df_subset[subset]
+
+            # ---- NEW: altitude filter ----
+            if alt_center_m is not None:
+                df = df[np.abs(df["altitude_m"].values - alt_center_m) <= alt_half_width_m].copy()
+            elif alt_range_m is not None:
+                lo, hi = alt_range_m
+                df = df[(df["altitude_m"].values >= lo) & (df["altitude_m"].values <= hi)].copy()
+
+            if df.empty:
+                print(f"⚠ subset {subset}: no points after altitude filter {alt_tag} — skipping.")
+                continue
+
             subset_dir = os.path.join(self.output_dir, f"Maps_{subset}")
             os.makedirs(subset_dir, exist_ok=True)
 
-            plt.figure(figsize=(10, 5))
-            color_data = df[color_by] if (color_by in df.columns) else df[true_col]
-
-            sc = plt.scatter(
-                df["lon"], df["lat"],
-                c=color_data, s=s, alpha=alpha, cmap=cmap
-            )
-
-            plt.xlabel("Longitude (°)")
-            plt.ylabel("Latitude (°)")
-            plt.title(f"Sample Distribution ({subset}) ({symbol}, Lmax={self.lmax})")
-            plt.colorbar(sc, label=color_by or true_col)
-            plt.tight_layout()
-
-            out = os.path.join(subset_dir, f"Scatter_Samples_{subset}_{self.target_type}.png")
-            plt.savefig(out, dpi=300, bbox_inches="tight")
-            plt.close()
-
+            # optional: keep color scale comparable within this slice
             df_true = df[true_col].to_numpy()
             df_pred = df[pred_col].to_numpy()
 
-            # Side-by-side maps
+            # Sample distribution
+            plt.figure(figsize=(10, 5))
+            color_data = df[color_by] if (color_by in df.columns) else df[true_col]
+            sc = plt.scatter(df["lon"], df["lat"], c=color_data, s=s, alpha=alpha, cmap=cmap)
+            plt.xlabel("Longitude (°)")
+            plt.ylabel("Latitude (°)")
+            title = f"Sample Distribution ({subset}) ({symbol}, Lmax={self.lmax})"
+            if alt_tag:
+                title += f" {alt_tag.replace('_', ' ')}"
+            plt.title(title)
+            plt.colorbar(sc, label=color_by or true_col)
+            plt.tight_layout()
+            plt.savefig(os.path.join(subset_dir, f"Scatter_Samples_{subset}_{self.target_type}{alt_tag}.png"),
+                        dpi=300, bbox_inches="tight")
+            plt.close()
+
+            # True vs Pred side-by-side maps
             fig, axes = plt.subplots(
                 1, 2, figsize=(12, 5),
                 subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)}
@@ -359,124 +405,161 @@ class GravityDataPlotter:
             vmin = min(df_true.min(), df_pred.min())
             vmax = max(df_true.max(), df_pred.max())
 
-            for ax, data, title in zip(
-                    axes,
-                    [df_true, df_pred],
-                    [f"True {symbol}", f"Predicted {symbol}"]):
-                sc = ax.scatter(df["lon"], df["lat"],
-                                c=data, s=s, alpha=alpha, cmap=cmap,
-                                transform=ccrs.PlateCarree(),
-                                vmin=vmin, vmax=vmax)
-
+            for ax, data, title0 in zip(axes, [df_true, df_pred], [f"True {symbol}", f"Predicted {symbol}"]):
+                sc = ax.scatter(df["lon"], df["lat"], c=data, s=s, alpha=alpha, cmap=cmap,
+                                transform=ccrs.PlateCarree(), vmin=vmin, vmax=vmax)
                 ax.set_global()
                 gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
                 gl.top_labels = False
                 gl.right_labels = False
-
                 cbar = plt.colorbar(sc, ax=ax, orientation="horizontal", pad=0.08)
                 cbar.set_label(unit)
-                ax.set_title(title)
 
-            out = os.path.join(subset_dir, f"Scatter_True_vs_Pred_{subset}_{self.target_type}.png")
-            plt.savefig(out, dpi=300, bbox_inches="tight")
+                ttl = title0
+                if alt_tag:
+                    ttl += f"\n{alt_tag.replace('_', ' ')}"
+                ax.set_title(ttl)
+
+            plt.savefig(os.path.join(subset_dir, f"Scatter_True_vs_Pred_{subset}_{self.target_type}{alt_tag}.png"),
+                        dpi=300, bbox_inches="tight")
             plt.close()
 
+            # Pred only
             plt.figure(figsize=(10, 5))
             ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180))
-
-            sc = ax.scatter(df["lon"], df["lat"],
-                            c=df_pred, s=s, alpha=alpha, cmap=cmap,
+            sc = ax.scatter(df["lon"], df["lat"], c=df_pred, s=s, alpha=alpha, cmap=cmap,
                             transform=ccrs.PlateCarree())
-
             ax.set_global()
             gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
             gl.top_labels = False
             gl.right_labels = False
-
             cbar = plt.colorbar(sc, orientation="horizontal", pad=0.08)
             cbar.set_label(unit)
-
-            ax.set_title(f"Predicted {symbol} ({subset})")
-            out = os.path.join(subset_dir, f"Scatter_Pred_only_{subset}_{self.target_type}.png")
-            plt.savefig(out, dpi=300, bbox_inches="tight")
+            ttl = f"Predicted {symbol} ({subset})"
+            if alt_tag:
+                ttl += f" {alt_tag.replace('_', ' ')}"
+            ax.set_title(ttl)
+            plt.savefig(os.path.join(subset_dir, f"Scatter_Pred_only_{subset}_{self.target_type}{alt_tag}.png"),
+                        dpi=300, bbox_inches="tight")
             plt.close()
 
-            plt.figure(figsize=(8, 5))
-            bins = min(50, max(10, len(np.unique(df_true)) // 4))
-
-            plt.hist(df_true, bins=bins, alpha=0.6, label="True", color="orange")
-            plt.hist(df_pred, bins=bins, alpha=0.6, label="Predicted", color="steelblue")
-
-            plt.xlabel(f"{symbol} ({unit})")
-            plt.ylabel("Frequency")
-            plt.title(f"Histogram {subset}: True vs Predicted {symbol}")
-            plt.legend()
-            plt.grid(True, linestyle="--", alpha=0.5)
-
-            out = os.path.join(subset_dir, f"Histogram_True_vs_Pred_{subset}_{self.target_type}.png")
-            plt.savefig(out, dpi=300, bbox_inches="tight")
-            plt.close()
-
+            # Linear maps (if available)
             if self.linear_available:
-
-                for lin_label, lin_dict in [
-                    ("Model_lmax", self.linear_preds["model"]),
-                    ("L_equiv", self.linear_preds["equiv"])
-                ]:
-
+                for lin_label, lin_dict in [("Model_lmax", self.linear_preds["model"]),
+                                            ("L_equiv", self.linear_preds["equiv"])]:
                     if subset not in lin_dict:
                         continue
 
                     lin_vals = lin_dict[subset]
 
+                    # IMPORTANT: lin_vals must align to df AFTER slicing.
+                    # This will be true only if you slice df by ROWS that correspond to the same ordering as the saved npy.
+                    # If not, you must slice lin_vals with the same mask indices before plotting.
+
                     plt.figure(figsize=(10, 5))
                     ax = plt.axes(projection=ccrs.PlateCarree(central_longitude=180))
-
-                    sc = ax.scatter(df["lon"], df["lat"],
-                                    c=lin_vals, s=s, alpha=alpha, cmap=cmap,
+                    sc = ax.scatter(df["lon"], df["lat"], c=lin_vals[:len(df)], s=s, alpha=alpha, cmap=cmap,
                                     transform=ccrs.PlateCarree())
-
                     ax.set_global()
                     gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
                     gl.top_labels = False
                     gl.right_labels = False
-
                     cbar = plt.colorbar(sc, orientation="horizontal", pad=0.08)
                     cbar.set_label(unit)
-
-                    ax.set_title(f"Linear Prediction ({lin_label}) — {subset}")
-                    out = os.path.join(subset_dir, f"Linear_{lin_label}_{subset}_{self.target_type}.png")
-                    plt.savefig(out, dpi=300, bbox_inches="tight")
+                    ttl = f"Linear Prediction ({lin_label}) — {subset}"
+                    if alt_tag:
+                        ttl += f"\n{alt_tag.replace('_', ' ')}"
+                    ax.set_title(ttl)
+                    plt.savefig(
+                        os.path.join(subset_dir, f"Linear_{lin_label}_{subset}_{self.target_type}{alt_tag}.png"),
+                        dpi=300, bbox_inches="tight")
                     plt.close()
 
-                    fig, axes = plt.subplots(
-                        1, 2, figsize=(12, 5),
-                        subplot_kw={'projection': ccrs.PlateCarree(central_longitude=180)}
-                    )
+    def plot_rmse_by_altitude(self, bins_km=(0, 50, 100, 150, 200, 250, 300, 350,400), subset="A"):
+        """
+        RMSE vs altitude bins for NN and (optionally) linear baselines.
+        Produces a bar chart (one group per bin).
+        """
 
-                    vmin_lin = min(df_true.min(), lin_vals.min())
-                    vmax_lin = max(df_true.max(), lin_vals.max())
+        if "altitude_m" not in self.sample_df.columns:
+            raise ValueError("sample_df must include 'altitude_m' for RMSE-by-altitude plots.")
 
-                    for ax, arr, title in zip(
-                            axes,
-                            [df_true, lin_vals],
-                            ["True", f"Linear ({lin_label})"]):
-                        sc = ax.scatter(df["lon"], df["lat"],
-                                        c=arr, s=s, alpha=alpha, cmap=cmap,
-                                        transform=ccrs.PlateCarree(),
-                                        vmin=vmin_lin, vmax=vmax_lin)
+        # columns by target type
+        if self.target_type == "acceleration":
+            true_col = "dg_total_mGal"
+            pred_col = "predicted_dg_total_mGal"
+            unit = "mGal"
+            symbol = "Δg"
+        elif self.target_type == "gradients":
+            true_col = "dg_total_mGal"
+            pred_col = "predicted_g_mag_mGal"
+            unit = "mGal"
+            symbol = "Δg"
+        else:
+            true_col = "dU_m2_s2"
+            pred_col = "predicted_dU_m2_s2"
+            unit = "m²/s²"
+            symbol = "ΔU"
 
-                        ax.set_global()
-                        gl = ax.gridlines(draw_labels=True, linewidth=0, color="none")
-                        gl.top_labels = False
-                        gl.right_labels = False
+        df = self.sample_df_subset[subset].copy()
 
-                        cbar = plt.colorbar(sc, orientation="horizontal", pad=0.08)
-                        cbar.set_label(unit)
-                        ax.set_title(title)
+        # altitude bins
+        bins_m = np.array(bins_km, dtype=float) * 1000.0
+        bin_ids = np.digitize(df["altitude_m"].to_numpy(), bins_m, right=False) - 1
+        n_bins = len(bins_m) - 1
 
-                    out = os.path.join(subset_dir, f"True_vs_Linear_{lin_label}_{subset}_{self.target_type}.png")
-                    plt.savefig(out, dpi=300, bbox_inches="tight")
-                    plt.close()
+        # helpers
+        def rmse(a, b):
+            a = np.asarray(a);
+            b = np.asarray(b)
+            return float(np.sqrt(np.mean((a - b) ** 2)))
 
+        # prepare series to compare
+        series = {
+            "NN": df[pred_col].to_numpy(),
+        }
+
+        if self.linear_available and self.target_type == "acceleration":
+            # your loader currently stores magnitude arrays only for linear
+            if subset in self.linear_preds["equiv"]:
+                series["Linear equiv"] = self.linear_preds["equiv"][subset]
+
+        y_true = df[true_col].to_numpy()
+
+        # compute rmse per bin
+        rmse_table = {name: [] for name in series.keys()}
+        counts = []
+
+        for b in range(n_bins):
+            idx = np.where(bin_ids == b)[0]
+            counts.append(len(idx))
+            if len(idx) < 50:  # avoid noisy bins
+                for name in rmse_table:
+                    rmse_table[name].append(np.nan)
+                continue
+
+            for name, y_pred in series.items():
+                rmse_table[name].append(rmse(y_pred[idx], y_true[idx]))
+
+        # plot
+        out_dir = os.path.join(self.output_dir, f"RMSE_by_altitude_{subset}")
+        os.makedirs(out_dir, exist_ok=True)
+
+        x = np.arange(n_bins)
+        width = 0.8 / max(1, len(rmse_table))
+
+        plt.figure(figsize=(12, 5))
+        for i, (name, vals) in enumerate(rmse_table.items()):
+            plt.bar(x + i * width, vals, width=width, label=name)
+
+        labels = [f"{bins_km[i]}–{bins_km[i + 1]} km\n(n={counts[i]})" for i in range(n_bins)]
+        plt.xticks(x + width * (len(rmse_table) - 1) / 2, labels)
+        plt.ylabel(f"RMSE ({unit})")
+        plt.title(f"RMSE vs Altitude bins — {symbol} — subset {subset}")
+        plt.grid(True, axis="y", linestyle="--", alpha=0.4)
+        plt.legend()
+
+        out = os.path.join(out_dir, f"RMSE_by_altitude_{self.target_type}_{subset}.png")
+        plt.savefig(out, dpi=300, bbox_inches="tight")
+        plt.close()
 
