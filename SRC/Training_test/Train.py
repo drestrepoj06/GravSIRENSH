@@ -97,7 +97,7 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "U"
+    mode = "g_indirect"
     lr = 5e-3
     batch_size = 262144
     lmax = 3
@@ -107,7 +107,7 @@ def main():
     hidden_omega_0 = 1.0
     exclude_degrees = None
     epochs = 1
-    arch = "pinn"  # "sirensh, linearsh or pinn"
+    arch = "sirensh"  # "sirensh, linearsh or pinn"
 
     if arch == "pinn":
         base_scaler = Scaler(mode=mode).fit(train_df)

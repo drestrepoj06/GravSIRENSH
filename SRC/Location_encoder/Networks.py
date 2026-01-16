@@ -34,21 +34,66 @@ class SineLayer(nn.Module):
     def forward(self, x):
         return torch.sin(self.omega_0 * self.linear(x))
 
-class SIRENNet(nn.Module):
-    def __init__(self, in_features, hidden_features, hidden_layers, out_features,
-                 first_omega_0=30, hidden_omega_0=1.0, final_linear=True):
+
+class ResidualSineBlock(nn.Module):
+    def __init__(self, hidden_features, n_layers=2, omega_0=1.0):
         super().__init__()
-        layers = [SineLayer(in_features, hidden_features, is_first=True, omega_0=first_omega_0)]
-        for _ in range(hidden_layers):
-            layers.append(SineLayer(hidden_features, hidden_features, omega_0=hidden_omega_0))
-        if final_linear:
-            layers.append(nn.Linear(hidden_features, out_features))
-        else:
-            layers.append(SineLayer(hidden_features, out_features, omega_0=hidden_omega_0))
-        self.net = nn.Sequential(*layers)
+        self.layers = nn.Sequential(*[
+            SineLayer(hidden_features, hidden_features, is_first=False, omega_0=omega_0)
+            for _ in range(n_layers)
+        ])
 
     def forward(self, x):
-        return self.net(x)
+        return x + self.layers(x)
+
+
+class SIRENNet(nn.Module):
+    def __init__(
+        self,
+        in_features,
+        hidden_features,
+        hidden_layers,      # total number of hidden SineLayers (same as your original meaning)
+        out_features,
+        first_omega_0=30,
+        hidden_omega_0=1.0,
+        final_linear=True,
+        residual_block_size=2,  # how many hidden SineLayers per residual block
+    ):
+        super().__init__()
+
+        # First layer (no residual; special init)
+        self.first = SineLayer(
+            in_features, hidden_features, is_first=True, omega_0=first_omega_0
+        )
+
+        # Hidden trunk with residual blocks
+        blocks = []
+        remaining = hidden_layers
+
+        # Use as many full residual blocks as possible
+        while remaining >= residual_block_size:
+            blocks.append(ResidualSineBlock(
+                hidden_features, n_layers=residual_block_size, omega_0=hidden_omega_0
+            ))
+            remaining -= residual_block_size
+
+        # Any leftover hidden layers (no residual, just plain)
+        for _ in range(remaining):
+            blocks.append(SineLayer(hidden_features, hidden_features, omega_0=hidden_omega_0))
+
+        self.trunk = nn.Sequential(*blocks)
+
+        # Output head
+        if final_linear:
+            self.final = nn.Linear(hidden_features, out_features)
+        else:
+            self.final = SineLayer(hidden_features, out_features, omega_0=hidden_omega_0)
+
+    def forward(self, x):
+        x = self.first(x)
+        x = self.trunk(x)
+        x = self.final(x)
+        return x
 
 class LINEARNet(nn.Module):
     def __init__(self, in_features, hidden_features, hidden_layers, out_features):
