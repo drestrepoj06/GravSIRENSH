@@ -90,6 +90,11 @@ def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
     data_path = os.path.join(base_dir, 'Data', 'Samples_2190-2_5.0M_r0_train.parquet')
 
+    if torch.cuda.is_available():
+        gpu_id = torch.cuda.current_device()
+        gpu_name = torch.cuda.get_device_name(gpu_id)
+
+
     df = pd.read_parquet(data_path)
     val_df = df.sample(n=500_000, random_state=42)
     train_df = df.drop(val_df.index)
@@ -187,7 +192,8 @@ def main():
         max_epochs=epochs,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         callbacks=[checkpoint],
-        devices=1,
+        devices=5,
+        strategy="ddp",
         log_every_n_steps=1,
         num_sanity_val_steps=0,
         gradient_clip_val=1.0,
@@ -246,6 +252,7 @@ def main():
         # common
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "device": str(device),
+        "gpu_name": gpu_name if gpu_name is not None else None,
         "architecture": arch,
         "mode": mode,
         "lr": lr,
