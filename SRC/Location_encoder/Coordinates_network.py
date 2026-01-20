@@ -250,31 +250,30 @@ class SH_SIREN(nn.Module):
             X = self.embedding(lon, lat, r)
             return self.siren(X)
 
+
         elif self.mode == "g_indirect":
-            with torch.set_grad_enabled(True):
-                lon = lon.to(net_device).requires_grad_(True)
-                lat = lat.to(net_device).requires_grad_(True)
-                r = r.to(net_device).requires_grad_(True)
+            lon = lon.to(net_device).requires_grad_(True)  # λ (rad)
+            lat = lat.to(net_device).requires_grad_(True)  # φ (rad)
+            r = r.to(net_device).requires_grad_(True)  # radius
+            X = self.embedding(lon, lat, r)
+            U = self.siren(X)  # shape [N, 1] (or [N])
+            dU_dlon, dU_dlat, dU_dr = torch.autograd.grad(
+                outputs=U,
+                inputs=[lon, lat, r],
+                grad_outputs=torch.ones_like(U),
+                create_graph=self.training,
+                retain_graph=self.training,  # set True only if you need another grad call on same graph
+                only_inputs=True
+            )
 
-                X = self.embedding(lon, lat, r)
-                U = self.siren(X)  # potential
+            eps = 1e-12
+            r_safe = torch.clamp(r, min=eps)
+            cos_lat = torch.clamp(torch.cos(lat), min=eps)  # avoid division blow-up near poles
+            g_r = -dU_dr
+            g_phi = -(1.0 / r_safe) * dU_dlat
+            g_lam = -(1.0 / (r_safe * cos_lat)) * dU_dlon
 
-                inputs = [lon, lat, r]
-                grads = torch.autograd.grad(
-                    outputs=U,
-                    inputs=inputs,
-                    grad_outputs=torch.ones_like(U),
-                    create_graph=self.training,
-                    retain_graph=self.training,
-                    only_inputs=True
-                )
-
-                # what you called g_theta/g_phi before (still same mapping)
-                g_theta = -grads[1]
-                g_phi = -grads[0]
-                g_r = -grads[2]
-
-                return U, (g_theta, g_phi, g_r)
+            return U, (g_phi, g_lam, g_r)
 
         else:
             raise ValueError(f"Unsupported mode '{self.mode}'")
@@ -399,30 +398,29 @@ class SH_LINEAR(nn.Module):
             X = self.embedding(lon, lat, r).to(self.device)
             return self.net(X)
 
+
         elif self.mode == "g_indirect":
-            with torch.set_grad_enabled(True):
-                lon = lon.to(self.device).requires_grad_(True)
-                lat = lat.to(self.device).requires_grad_(True)
-                r   = r.to(self.device).requires_grad_(True)
 
-                X = self.embedding(lon, lat, r).to(self.device)
-                U_pred = self.net(X)
-
-                inputs = [lon, lat, r]
-                grads = torch.autograd.grad(
-                    outputs=U_pred,
-                    inputs=inputs,
-                    grad_outputs=torch.ones_like(U_pred),
-                    create_graph=self.training,
-                    retain_graph=self.training,
-                    only_inputs=True,
-                )
-
-                g_theta = -grads[1]
-                g_phi   = -grads[0]
-                g_r = -grads[2]
-
-                return U_pred, (g_theta, g_phi, g_r)
+            lon = lon.to(self.device).requires_grad_(True)  # λ (rad)
+            lat = lat.to(self.device).requires_grad_(True)  # φ (rad)
+            r = r.to(self.device).requires_grad_(True)  # radius
+            X = self.embedding(lon, lat, r)
+            U = self.net(X)  # shape [N, 1] (or [N])
+            dU_dlon, dU_dlat, dU_dr = torch.autograd.grad(
+                outputs=U,
+                inputs=[lon, lat, r],
+                grad_outputs=torch.ones_like(U),
+                create_graph=self.training,
+                retain_graph=self.training,  # set True only if you need another grad call on same graph
+                only_inputs=True
+            )
+            eps = 1e-12
+            r_safe = torch.clamp(r, min=eps)
+            cos_lat = torch.clamp(torch.cos(lat), min=eps)  # avoid division blow-up near poles
+            g_r = -dU_dr
+            g_phi = -(1.0 / r_safe) * dU_dlat
+            g_lam = -(1.0 / (r_safe * cos_lat)) * dU_dlon
+            return U, (g_phi, g_lam, g_r)
 
         else:
             raise ValueError(f"Unsupported mode '{self.mode}'")
@@ -520,21 +518,24 @@ class PINN(nn.Module):
         x = torch.stack([lon_s, lat_s, rho], dim=-1)
         U_raw = self.net(x)          # Nx1
 
-        grads = torch.autograd.grad(
+        dU_dlon, dU_dlat, dU_dr = torch.autograd.grad(
             outputs=U_raw,
             inputs=[lon, lat, r],
             grad_outputs=torch.ones_like(U_raw),
             create_graph=self.training,
-            retain_graph=self.training,
-            only_inputs=True,
+            retain_graph=self.training,  # set True only if you need another grad call on same graph
+            only_inputs=True
         )
-        dU_dlon, dU_dlat, dU_dr = grads  # derivatives w.r.t (deg, deg, m)
 
-        g_theta = -dU_dlat
-        g_phi   = -dU_dlon
-        g_r     = -dU_dr
+        eps = 1e-12
+        r_safe = torch.clamp(r, min=eps)
+        cos_lat = torch.clamp(torch.cos(lat), min=eps)  # avoid division blow-up near poles
 
-        return U_raw, (g_theta, g_phi, g_r)
+        g_r = -dU_dr
+        g_phi = -(1.0 / r_safe) * dU_dlat
+        g_lam = -(1.0 / (r_safe * cos_lat)) * dU_dlon
+
+        return U_raw, (g_phi, g_lam, g_r)
 
 class Gravity(pl.LightningModule):
     def __init__(self, model_cfg, scaler, lr=1e-4):

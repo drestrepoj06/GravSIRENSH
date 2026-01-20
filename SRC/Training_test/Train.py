@@ -109,7 +109,7 @@ def main():
     hidden_omega_0 = 1.0
     exclude_degrees = None
     epochs = 1
-    arch = "linearsh"  # "sirensh, linearsh or pinn"
+    arch = "pinn"  # "sirensh, linearsh or pinn"
 
     if arch == "pinn":
         base_scaler = Scaler(mode=mode).fit(train_df)
