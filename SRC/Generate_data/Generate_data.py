@@ -110,8 +110,8 @@ class GravityDataGenerator:
     # From https://github.com/MartinAstro/GravNN/blob/master/GravNN/Trajectories/FibonacciDist.py
     # Line 10
     def fibonacci_spiral_sphere(self, num_points, r):
-        gr = (np.sqrt(5.0) + 1.0) / 2.0  # golden ratio
-        ga = (2.0 - gr) * (2.0 * np.pi)  # golden angle
+        gr = (np.sqrt(5.0) + 1.0) / 2.0
+        ga = (2.0 - gr) * (2.0 * np.pi)
 
         lat = np.arcsin(-1.0 + 2.0 * np.arange(num_points) / num_points)
         lon = ga * np.arange(num_points)
@@ -172,7 +172,7 @@ def main():
 
     lmax_full = 2190
     lmax_base = 2
-    altitude = 420000
+    altitude = 0
 
     generator_train = GravityDataGenerator(
         lmax_full=lmax_full,

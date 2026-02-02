@@ -21,8 +21,6 @@ class LinearEquivalentGenerator:
         with open(os.path.join(run_dir, "config.json")) as f:
             self.config = json.load(f)
 
-        self.is_pinn = ("lmax" not in self.config) or (self.config.get("model_type", "").lower() == "pinn")
-
         self.lmax = self.config.get("lmax", None)
 
         params = self.compute_model_params(self.config)
@@ -71,9 +69,7 @@ class LinearEquivalentGenerator:
         if mode in ["U", "g_indirect"]:
             output_dim = 1
         elif mode == "g_direct":
-            output_dim = 2
-        # elif mode == "g_hybrid":
-        #     output_dim = 3
+            output_dim = 3
         else:
             raise ValueError(f"Unknown mode '{mode}'")
 
@@ -145,7 +141,7 @@ class LinearEquivalentGenerator:
         dg_r = gr_full - gr_low
         dg_theta = gtheta_full - gtheta_low
         dg_phi = gphi_full - gphi_low
-        dg_total = np.sqrt(dg_theta ** 2 + dg_phi ** 2)
+        dg_total = np.sqrt(dg_theta ** 2 + dg_phi ** 2 + dg_r**2)
 
         lats = res_full.pot.lats()
         lons = res_full.pot.lons()
@@ -221,7 +217,7 @@ class LinearEquivalentGenerator:
         g_r = (g[:, 0] * 1e5).astype("float32")
         g_theta = (g[:, 1] * 1e5).astype("float32")
         g_phi = (g[:, 2] * 1e5).astype("float32")
-        g_mag = np.sqrt(g_theta ** 2 + g_phi ** 2)
+        g_mag = np.sqrt(g_theta ** 2 + g_phi ** 2 + g_r**2)
 
         subsets = {
             "A": A_idx,

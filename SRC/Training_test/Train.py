@@ -13,13 +13,13 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.Location_encoder.Coordinates_network import PINNScaler, Scaler, Gravity
+from SRC.Location_encoder.Coordinates_network import MANDS2022Scaler, Scaler, Gravity
 import SRC.Training_test.Test as test_script
 from SRC.Visualizations.Geographic_plots import GravityDataPlotter
 
 
 class GravityDataset(torch.utils.data.Dataset):
-    def __init__(self, df, scaler, mode="g_direct", include_radial=False):
+    def __init__(self, df, scaler, mode="g_direct"):
         self.mode = mode
         self.scaler = scaler
 
@@ -27,10 +27,8 @@ class GravityDataset(torch.utils.data.Dataset):
         self.lat = torch.tensor(df["lat"].values, dtype=torch.float32)
 
         def _scale_g(g_phys):
-            # SH scaler path
             if hasattr(self.scaler, "scale_gravity"):
                 return self.scaler.scale_gravity(g_phys)
-            # PINN scaler path (uniform)
             if hasattr(self.scaler, "scale_accel_uniform"):
                 return self.scaler.scale_accel_uniform(g_phys)
             raise AttributeError(
@@ -43,15 +41,7 @@ class GravityDataset(torch.utils.data.Dataset):
             self.y = torch.tensor(U_scaled, dtype=torch.float32).unsqueeze(1)
 
         elif mode in ["g_direct"]:
-            cols = ["dg_theta_mGal", "dg_phi_mGal"]
-            if include_radial:
-                cols = ["dg_r_mGal"] + cols
-            g_phys = df[cols].values
-            g_scaled = _scale_g(g_phys)
-            self.y = torch.tensor(g_scaled, dtype=torch.float32)
-
-        elif mode == "g_indirect":
-            cols = ["dg_theta_mGal", "dg_phi_mGal"]
+            cols = ["dg_theta_mGal", "dg_phi_mGal", "dg_r_mGal"]
             g_phys = df[cols].values
             g_scaled = _scale_g(g_phys)
             self.y = torch.tensor(g_scaled, dtype=torch.float32)
@@ -102,25 +92,24 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "g_indirect"
+    mode = "g_direct"
     lr = 5e-3
     batch_size = 262144
     lmax = 3
     hidden_layers = 2
-    hidden_features = 8
+    hidden_features = 40
     first_omega_0 = 20
     hidden_omega_0 = 1.0
     exclude_degrees = None
     epochs = 1
-    arch = "sirensh"  # "sirensh, linearsh or pinn"
+    arch = "mands2022"  # "sirensh, linearsh or mands2022"
 
-    if arch == "pinn":
-        base_scaler = Scaler(mode=mode).fit(train_df)
-        scaler = PINNScaler(base_scaler=base_scaler).fit(train_df)
+    if arch == "mands2022":
+        scaler = MANDS2022Scaler().fit(train_df)
     else:
         scaler = Scaler(mode=mode).fit(train_df)
 
-    if arch == "pinn":
+    if arch == "mands2022":
         run_name = (
             f"{arch}_LR={lr}_mode={mode}_BS={batch_size}_"
             f"layers={hidden_layers}_neurons={hidden_features}"
@@ -147,7 +136,7 @@ def main():
     run_dir = os.path.join(base_dir, "Outputs", "Runs", run_name)
     os.makedirs(run_dir, exist_ok=True)
 
-    if arch == "pinn":
+    if arch == "mands2022":
         model_cfg = dict(
             hidden_features=hidden_features,
             hidden_layers=hidden_layers,
@@ -156,13 +145,25 @@ def main():
             mode=mode,
             arch=arch,
         )
-    else:
+    elif arch == "sirensh":
         model_cfg = dict(
             lmax=lmax,
             hidden_features=hidden_features,
             hidden_layers=hidden_layers,
             first_omega_0=first_omega_0,
             hidden_omega_0=hidden_omega_0,
+            device=device,
+            scaler=scaler,
+            cache_path=os.path.join(base_dir, "Data", "cache_train.npy"),
+            exclude_degrees=exclude_degrees,
+            mode=mode,
+            arch=arch,
+        )
+    else:
+        model_cfg = dict(
+            lmax=lmax,
+            hidden_features=hidden_features,
+            hidden_layers=hidden_layers,
             device=device,
             scaler=scaler,
             cache_path=os.path.join(base_dir, "Data", "cache_train.npy"),
@@ -192,13 +193,13 @@ def main():
         max_epochs=epochs,
         accelerator="gpu" if torch.cuda.is_available() else "cpu",
         callbacks=[checkpoint],
-        devices=5,
-        strategy="ddp",
+        devices=1,
         log_every_n_steps=1,
         num_sanity_val_steps=0,
         gradient_clip_val=1.0,
         gradient_clip_algorithm="norm",
-        logger=wandb_logger
+        logger=wandb_logger,
+        inference_mode=False
     )
 
     trainer.fit(module, datamodule=datamodule)
@@ -242,6 +243,28 @@ def main():
             "g_std": getattr(base, "g_std", None).tolist() if getattr(base, "g_std", None) is not None else None,
         }
 
+    for k in ["lon_min", "lon_max", "lat_min", "lat_max"]:
+        if hasattr(scaler, k):
+            v = getattr(scaler, k, None)
+            scaler_payload[k] = float(v) if v is not None else None
+
+    if hasattr(scaler, "U_min") and hasattr(scaler, "U_max"):
+        scaler_payload["U_min"] = (
+            float(scaler.U_min) if scaler.U_min is not None else None
+        )
+        scaler_payload["U_max"] = (
+            float(scaler.U_max) if scaler.U_max is not None else None
+        )
+
+    # Acceleration (vector, 3,)
+    if hasattr(scaler, "a_min") and hasattr(scaler, "a_max"):
+        scaler_payload["a_min"] = (
+            scaler.a_min.tolist() if scaler.a_min is not None else None
+        )
+        scaler_payload["a_max"] = (
+            scaler.a_max.tolist() if scaler.a_max is not None else None
+        )
+
     torch.save({
         "state_dict": inner_state_dict,
         "scaler": scaler_payload,
@@ -252,7 +275,7 @@ def main():
         # common
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "device": str(device),
-        "gpu_name": gpu_name if gpu_name is not None else None,
+        #"gpu_name": gpu_name if gpu_name is not None else None,
         "architecture": arch,
         "mode": mode,
         "lr": lr,
@@ -273,9 +296,13 @@ def main():
         config["first_omega_0"] = first_omega_0
         config["hidden_omega_0"] = hidden_omega_0
 
-    if arch == "pinn":
+    if arch == "mands2022":
         if hasattr(scaler, "r_scale"):
             config["r_scale"] = float(getattr(scaler, "r_scale"))
+        if hasattr(scaler, "lon_min"):
+            config["lon_min"] = float(getattr(scaler, "lon_min"))
+            config["lon_max"] = float(getattr(scaler, "lon_max"))
+            config["lat_min"] = float(getattr(scaler, "lat_max"))
         if hasattr(scaler, "a_scale"):
             a_scale = getattr(scaler, "a_scale", None)
             config["a_scale"] = float(a_scale) if a_scale is not None and not hasattr(a_scale, "tolist") else (
@@ -293,8 +320,7 @@ def main():
     test_script.main(run_path=run_dir)
 
     PLOTS_BY_MODE = {
-        "U": ["potential", "acceleration"],
-        "g_indirect": ["potential", "acceleration"],
+        "U": ["potential"],
         "g_direct": ["acceleration"]
     }
 
