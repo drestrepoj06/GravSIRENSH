@@ -198,9 +198,6 @@ class GravityDataGenerator:
 
         shells = np.linspace(0.0, float(max_alt_m), int(n_alt_shells)).astype("float32")
 
-        # ------------------------------------------------------------
-        # 3) Bracketing shells (lower/upper) + alpha
-        # ------------------------------------------------------------
         lower_idx = np.searchsorted(shells, altitude, side="right") - 1
         lower_idx = np.clip(lower_idx, 0, len(shells) - 1)
 
@@ -214,9 +211,6 @@ class GravityDataGenerator:
         m = denom > 0
         alpha[m] = ((altitude[m] - h_lo[m]) / denom[m]).astype("float32")
 
-        # ------------------------------------------------------------
-        # 4) Allocate lower/upper arrays
-        # ------------------------------------------------------------
         dU_lo = np.empty(N, dtype="float32")
         dg_r_lo = np.empty(N, dtype="float32")
         dg_theta_lo = np.empty(N, dtype="float32")
@@ -227,12 +221,8 @@ class GravityDataGenerator:
         dg_theta_hi = np.empty(N, dtype="float32")
         dg_phi_hi = np.empty(N, dtype="float32")
 
-        # All shell indices we must compute
         shells_needed = np.unique(np.concatenate([lower_idx, upper_idx]))
 
-        # ------------------------------------------------------------
-        # 5) Compute each needed shell ONCE on the full grid, then sample
-        # ------------------------------------------------------------
         for k in shells_needed:
             idx_need = np.where((lower_idx == k) | (upper_idx == k))[0]
             if idx_need.size == 0:

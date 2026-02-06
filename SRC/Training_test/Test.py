@@ -9,7 +9,7 @@ import multiprocessing as mp
 import time
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.Location_encoder.Coordinates_network import SH_SIREN, SH_LINEAR, PINN, PINNScaler, Scaler
+from SRC.Location_encoder.Coordinates_network import SH_SIREN, SH_LINEAR, MANDS2022, MANDS2022Scaler, Scaler
 from SRC.Linear.Linear_equivalent import LinearEquivalentGenerator
 
 
@@ -64,27 +64,58 @@ def main(run_path=None):
     scaler_data = checkpoint["scaler"]
     arch = config["architecture"]
 
-    if arch == "pinn":
-        base_scaler = Scaler(mode=mode)
+    if arch == "mands2022":
+        # -------------------------------------------------
+        # Build scaler
+        # -------------------------------------------------
+        scaler = MANDS2022Scaler()
 
-        base_blob = scaler_data.get("base", {})
-        base_scaler.U_mean = base_blob.get("U_mean")
-        base_scaler.U_std = base_blob.get("U_std")
+        # -------------------------------------------------
+        # Restore min–max for POTENTIAL
+        # -------------------------------------------------
+        U_min = scaler_data.get("U_min", None)
+        U_max = scaler_data.get("U_max", None)
 
-        g_mean = base_blob.get("g_mean")
-        g_std = base_blob.get("g_std")
-        if g_mean is not None:
-            base_scaler.g_mean = torch.tensor(g_mean, dtype=torch.float32, device=device)
-        if g_std is not None:
-            base_scaler.g_std = torch.tensor(g_std, dtype=torch.float32, device=device)
+        if U_min is None or U_max is None:
+            raise ValueError(
+                "Checkpoint missing U_min/U_max for mands2022 scaler."
+            )
 
-        scaler = PINNScaler(base_scaler=base_scaler)
+        scaler.U_min = float(U_min)
+        scaler.U_max = float(U_max)
 
-        a_scale = scaler_data.get("a_scale", None)
-        scaler.a_scale = 1.0 if a_scale is None else float(a_scale)
+        # -------------------------------------------------
+        # Restore min–max for ACCELERATION (vector)
+        # -------------------------------------------------
+        a_min = scaler_data.get("a_min", None)
+        a_max = scaler_data.get("a_max", None)
 
-        U_scale = scaler_data.get("U_scale", None)
-        scaler.U_scale = 1.0 if U_scale is None else float(U_scale)
+        if a_min is None or a_max is None:
+            raise ValueError(
+                "Checkpoint missing a_min/a_max for mands2022 scaler."
+            )
+
+        scaler.a_min = np.asarray(a_min, dtype=float)
+        scaler.a_max = np.asarray(a_max, dtype=float)
+
+        # -------------------------------------------------
+        # Restore coordinate scaling (REQUIRED)
+        # -------------------------------------------------
+        lon_min = scaler_data.get("lon_min", None)
+        lon_max = scaler_data.get("lon_max", None)
+        lat_min = scaler_data.get("lat_min", None)
+        lat_max = scaler_data.get("lat_max", None)
+
+        if None in (lon_min, lon_max, lat_min, lat_max):
+            raise ValueError(
+                "Missing lon/lat min-max in checkpoint scaler_data. "
+                "You must save lon_min, lon_max, lat_min, lat_max when training."
+            )
+
+        scaler.lon_min = float(lon_min)
+        scaler.lon_max = float(lon_max)
+        scaler.lat_min = float(lat_min)
+        scaler.lat_max = float(lat_max)
 
     else:
         scaler = Scaler(mode=mode)
@@ -102,14 +133,14 @@ def main(run_path=None):
         ModelClass = SH_SIREN
     elif arch == "linearsh":
         ModelClass = SH_LINEAR
-    elif arch == "pinn":
-        ModelClass = PINN
+    elif arch == "mands2022":
+        ModelClass = MANDS2022
     else:
-        raise ValueError(f"Unknown architecture '{arch}'. Expected 'sirensh', 'linearsh', or 'pinn'.")
+        raise ValueError(f"Unknown architecture '{arch}'. Expected 'sirensh', 'linearsh', or 'mands2022'.")
 
     cache_path = os.path.join(base_dir, "Data", "cache_test.npy")
 
-    if arch == "pinn":
+    if arch == "mands2022":
         model = ModelClass(
             hidden_features=config["hidden_features"],
             hidden_layers=config["hidden_layers"],
@@ -133,7 +164,7 @@ def main(run_path=None):
 
     state = checkpoint["state_dict"]
 
-    if arch == "pinn":
+    if arch == "mands2022":
         model_state = model.state_dict()
         filtered = {k: v for k, v in state.items()
                     if k in model_state and model_state[k].shape == v.shape}
@@ -250,7 +281,6 @@ def main(run_path=None):
             g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2 + g_r ** 2)  # <-- NEW
 
             U_pred = None
-            g_theta_grad = g_phi_grad = g_r_grad = g_mag_grad = None
 
 
         elif mode in ["U", "g_indirect"]:
@@ -262,7 +292,6 @@ def main(run_path=None):
             g_phi = g_phys[:, 1]
             g_r = g_phys[:, 2]
             g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2 + g_r ** 2)
-            g_theta_grad = g_phi_grad = g_r_grad = g_mag_grad = None
 
 
         else:
@@ -300,10 +329,6 @@ def main(run_path=None):
         np.save(f"{prefix}_g_rad.npy", g_r.cpu().numpy())
         np.save(f"{prefix}_g_mag.npy", g_mag.cpu().numpy())
 
-        if g_theta_grad is not None:
-            np.save(f"{prefix}_g_theta_grad.npy", g_theta_grad.cpu().numpy())
-            np.save(f"{prefix}_g_phi_grad.npy", g_phi_grad.cpu().numpy())
-            np.save(f"{prefix}_g_mag_grad.npy", g_mag_grad.cpu().numpy())
 
         def stats(arr):
             return {
@@ -322,11 +347,6 @@ def main(run_path=None):
 
         if U_pred is not None:
             pred_stats["U"] = stats(U_pred.cpu().numpy())
-
-        if g_theta_grad is not None:
-            pred_stats["g_theta_grad"] = stats(g_theta_grad.cpu().numpy())
-            pred_stats["g_phi_grad"] = stats(g_phi_grad.cpu().numpy())
-            pred_stats["g_mag_grad"] = stats(g_mag_grad.cpu().numpy())
 
         true_stats = {
             "g_theta": stats(true_theta.cpu().numpy()),

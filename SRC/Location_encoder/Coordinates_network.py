@@ -55,74 +55,129 @@ class Scaler:
 
 # Using https://github.com/MartinAstro/GravNN/blob/5debb42013097944c0398fe5b570d7cd9ebd43bd/GravNN/Preprocessors/UniformScaler.py#L3
 # Scale of raw coordinates too
-class PINNScaler:
-    def __init__(self, base_scaler: Scaler, a_scale=None, U_scale=None):
-        self.base = base_scaler
-        self.a_scale = None if a_scale is None else float(a_scale)
-        self.U_scale = None if U_scale is None else float(U_scale)
-        self.Rang = np.pi
+class MANDS2022Scaler:
+    def __init__(self):
+
+        self.lon_min = None
+        self.lon_max = None
+        self.lat_min = None
+        self.lat_max = None
+
+        # U is scalar
+        self.U_min = None
+        self.U_max = None
+
+        # g vector (3,) min/max
+        self.a_min = None
+        self.a_max = None
+
+        self.eps = 1e-12
 
     def fit(self, df):
-        if self.U_scale is None:
-            if "dU_m2_s2" in df.columns:
-                U = df["dU_m2_s2"].to_numpy(dtype=float)
-                rmsU = float(np.sqrt(np.mean(U ** 2)))
-                self.U_scale = rmsU if rmsU > 0 else 1.0
-            else:
-                self.U_scale = 1.0
+        self.lon_min = float(df["lon"].min())
+        self.lon_max = float(df["lon"].max())
+        self.lat_min = float(df["lat"].min())
+        self.lat_max = float(df["lat"].max())
 
-        if self.a_scale is None:
-            g_cols = ["dg_theta_mGal", "dg_phi_mGal"]
-            g = df[g_cols].to_numpy(dtype=float)
-            rms = float(np.sqrt(np.mean(g ** 2)))
-            self.a_scale = rms if rms > 0 else 1.0
+        if "dU_m2_s2" in df.columns:
+            U = df["dU_m2_s2"].to_numpy(dtype=float)
+            self.U_min = float(U.min())
+            self.U_max = float(U.max())
+
+            # protect against degenerate range
+            if not np.isfinite(self.U_min) or not np.isfinite(self.U_max) or abs(self.U_max - self.U_min) < self.eps:
+                # fallback so scaling doesn't blow up
+                self.U_min = 0.0
+                self.U_max = 1.0
+
+        g_cols = ["dg_theta_mGal", "dg_phi_mGal", "dg_r_mGal"]
+        g = df[g_cols].to_numpy(dtype=float)  # (N,3)
+
+        self.a_min = g.min(axis=0).astype(float)
+        self.a_max = g.max(axis=0).astype(float)
+
+        # protect per-component degeneracy / NaNs
+        rng = self.a_max - self.a_min
+        bad = (~np.isfinite(self.a_min)) | (~np.isfinite(self.a_max)) | (np.abs(rng) < self.eps)
+        if np.any(bad):
+            # set degenerate components to a safe range
+            self.a_min = np.where(bad, 0.0, self.a_min)
+            self.a_max = np.where(bad, 1.0, self.a_max)
 
         return self
 
-    def scale_coords(self, lonlatr):
-        """
-        lonlatr: array-like (..., 3) = [lon_deg, lat_deg, r_m]
-        returns: (..., 3) = [lon_scaled, lat_scaled, rho]
-        """
-        lon_deg = lonlatr[..., 0]
-        lat_deg = lonlatr[..., 1]
-        r_m = lonlatr[..., 2]
-
-        lon_rad = lon_deg * (np.pi / 180.0)
-        lat_rad = lat_deg * (np.pi / 180.0)
-
-        lon_scaled = lon_rad / self.Rang  # [-1, 1] if lon in [-pi, pi]
-        lat_scaled = lat_rad / self.Rang  # [-0.5, 0.5] if lat in [-pi/2, pi/2]
-
-        rho = r_m / self.r_scale  # ~ 1 + h/R
-
-        return np.stack([lon_scaled, lat_scaled, rho], axis=-1)
-
-    def unscale_coords(self, coords_scaled):
-        lon_scaled = coords_scaled[..., 0]
-        lat_scaled = coords_scaled[..., 1]
-        rho = coords_scaled[..., 2]
-
-        lon_rad = lon_scaled * self.Rang
-        lat_rad = lat_scaled * self.Rang
-
-        lon_deg = lon_rad * (180.0 / np.pi)
-        lat_deg = lat_rad * (180.0 / np.pi)
-
-        r_m = rho * self.r_scale
-        return np.stack([lon_deg, lat_deg, r_m], axis=-1)
+    def _as_torch(self, x, like: torch.Tensor):
+        if torch.is_tensor(x):
+            return x.to(device=like.device, dtype=like.dtype)
+        return torch.as_tensor(x, device=like.device, dtype=like.dtype)
 
     def scale_potential(self, U):
-        return U / self.U_scale
+        if self.U_min is None or self.U_max is None:
+            raise ValueError("MANDS2022Scaler not fitted for potential (U_min/U_max missing).")
+
+        denom = (self.U_max - self.U_min)
+        if torch.is_tensor(U):
+            U_min = self._as_torch(self.U_min, U)
+            denom_t = self._as_torch(denom if abs(denom) >= self.eps else 1.0, U)
+            return 2.0 * (U - U_min) / denom_t - 1.0
+
+        denom = denom if abs(denom) >= self.eps else 1.0
+        return 2.0 * (U - self.U_min) / denom - 1.0
 
     def unscale_potential(self, U_scaled):
-        return U_scaled * self.U_scale
+        if self.U_min is None or self.U_max is None:
+            raise ValueError("MANDS2022Scaler not fitted for potential (U_min/U_max missing).")
+
+        denom = (self.U_max - self.U_min)
+        if torch.is_tensor(U_scaled):
+            U_min = self._as_torch(self.U_min, U_scaled)
+            denom_t = self._as_torch(denom if abs(denom) >= self.eps else 1.0, U_scaled)
+            return (U_scaled + 1.0) * 0.5 * denom_t + U_min
+
+        denom = denom if abs(denom) >= self.eps else 1.0
+        return (U_scaled + 1.0) * 0.5 * denom + self.U_min
 
     def scale_accel_uniform(self, a):
-        return a / self.a_scale
+        if self.a_min is None or self.a_max is None:
+            raise ValueError("MANDS2022Scaler not fitted for accel (a_min/a_max missing).")
+
+        rng = (self.a_max - self.a_min)
+        rng = np.where(np.abs(rng) < self.eps, 1.0, rng)
+
+        if torch.is_tensor(a):
+            a_min = self._as_torch(self.a_min, a)
+            rng_t = self._as_torch(rng, a)
+            return 2.0 * (a - a_min) / rng_t - 1.0
+
+        return 2.0 * (a - self.a_min) / rng - 1.0
 
     def unscale_accel_uniform(self, a_scaled):
-        return a_scaled * self.a_scale
+        if self.a_min is None or self.a_max is None:
+            raise ValueError("MANDS2022Scaler not fitted for accel (a_min/a_max missing).")
+
+        rng = (self.a_max - self.a_min)
+        rng = np.where(np.abs(rng) < self.eps, 1.0, rng)
+
+        if torch.is_tensor(a_scaled):
+            a_min = self._as_torch(self.a_min, a_scaled)
+            rng_t = self._as_torch(rng, a_scaled)
+            return (a_scaled + 1.0) * 0.5 * rng_t + a_min
+
+        return (a_scaled + 1.0) * 0.5 * rng + self.a_min
+
+    def scale_coords(self, lonlat_deg):
+        lon = lonlat_deg[..., 0]
+        lat = lonlat_deg[..., 1]
+        lon_s = 2.0 * (lon - self.lon_min) / (self.lon_max - self.lon_min) - 1.0
+        lat_s = 2.0 * (lat - self.lat_min) / (self.lat_max - self.lat_min) - 1.0
+        return np.stack([lon_s, lat_s], axis=-1)
+
+    def unscale_coords(self, lonlat_scaled):
+        lon_s = lonlat_scaled[..., 0]
+        lat_s = lonlat_scaled[..., 1]
+        lon = (lon_s + 1.0) * 0.5 * (self.lon_max - self.lon_min) + self.lon_min
+        lat = (lat_s + 1.0) * 0.5 * (self.lat_max - self.lat_min) + self.lat_min
+        return np.stack([lon, lat], axis=-1)
 
 # Based on the code https://github.com/MarcCoru/locationencoder/blob/main/locationencoder/locationencoder.py
 # But only for the encoder SH + Siren network and the autograd of Martin & Schaub (2022)
@@ -222,20 +277,23 @@ class SH_SIREN(nn.Module):
                     outputs = self.siren(X)
 
                     inputs = [lon, lat, r]
-                    grads = torch.autograd.grad(
+                    dU_dlon, dU_dlat, dU_dr = torch.autograd.grad(
                         outputs=outputs,
-                        inputs=inputs,
+                        inputs=[lon, lat, r],
                         grad_outputs=torch.ones_like(outputs),
                         create_graph=self.training,
-                        retain_graph=self.training,
+                        retain_graph=self.training,  # set True only if you need another grad call on same graph
                         only_inputs=True
                     )
 
-                    g_theta = -grads[1]
-                    g_phi = -grads[0]
-                    g_r = -grads[2]
+                    eps = 1e-12
+                    r_safe = torch.clamp(r, min=eps)
+                    cos_lat = torch.clamp(torch.cos(lat), min=eps)  # avoid division blow-up near poles
+                    g_r = -dU_dr
+                    g_phi = -(1.0 / r_safe) * dU_dlat
+                    g_lam = -(1.0 / (r_safe * cos_lat)) * dU_dlon
 
-                    return outputs, (g_theta, g_phi, g_r)
+                    return outputs, (g_phi, g_lam, g_r)
 
             lon = lon.to(net_device)
             lat = lat.to(net_device)
@@ -368,7 +426,7 @@ class SH_LINEAR(nn.Module):
                     outputs = self.net(X)
 
                     inputs = [lon, lat, r]
-                    grads = torch.autograd.grad(
+                    dU_dlon, dU_dlat, dU_dr = torch.autograd.grad(
                         outputs=outputs,
                         inputs=inputs,
                         grad_outputs=torch.ones_like(outputs),
@@ -377,11 +435,14 @@ class SH_LINEAR(nn.Module):
                         only_inputs=True
                     )
 
-                    g_theta = -grads[1]
-                    g_phi = -grads[0]
-                    g_r = -grads[2]
+                    eps = 1e-12
+                    r_safe = torch.clamp(r, min=eps)
+                    cos_lat = torch.clamp(torch.cos(lat), min=eps)  # avoid division blow-up near poles
+                    g_r = -dU_dr
+                    g_phi = -(1.0 / r_safe) * dU_dlat
+                    g_lam = -(1.0 / (r_safe * cos_lat)) * dU_dlon
 
-                    return outputs, (g_theta, g_phi, g_r)
+                    return outputs, (g_phi, g_lam, g_r)
 
             lon = lon.to(self.device)
             lat = lat.to(self.device)
@@ -427,9 +488,9 @@ class SH_LINEAR(nn.Module):
 
 # Class to replicate Martin & Schaub's (2022) architecture, with some modifications
 
-class PINN(nn.Module):
+class MANDS2022(nn.Module):
     """
-    PINN that takes (lon, lat, r) as inputs.
+    MANDS2022 that takes (lon, lat, r) as inputs.
     Scaling is done in torch so autograd can give derivatives w.r.t lon/lat/r.
     Conventions:
       - Returns U_neg = -U_raw
@@ -442,9 +503,10 @@ class PINN(nn.Module):
         hidden_features=128,
         hidden_layers=4,
         device="cuda",
-        scaler=None,     # PINNScaler (for output scaling if you want; input scaling done here)
+        scaler=None,     # MANDS2022Scaler (for output scaling if you want; input scaling done here)
         mode="g_indirect",
         r_scale=6378136.6,
+        **kwargs
     ):
         super().__init__()
         self.device = device
@@ -453,7 +515,7 @@ class PINN(nn.Module):
         self.r_scale = float(r_scale)
 
         if mode not in ["U", "g_direct", "g_indirect"]:
-            raise ValueError(f"Unsupported PINN mode: {mode}")
+            raise ValueError(f"Unsupported MANDS2022S mode: {mode}")
 
         out_features = 1 if mode in ["U", "g_indirect"] else 3  # if g_direct now includes gr
         # If you still want g_direct only (g_theta,g_phi), set out_features=2 and ignore gr.
@@ -484,7 +546,7 @@ class PINN(nn.Module):
         lon_rad = lon_deg * deg2rad
         lat_rad = lat_deg * deg2rad
 
-        # uniform angular scale (matches your PINNScaler idea)
+        # uniform angular scale (matches your MANDS2022SScaler idea)
         lon_s = lon_rad / torch.pi
         lat_s = lat_rad / torch.pi
 
@@ -492,7 +554,7 @@ class PINN(nn.Module):
 
         return lon_s, lat_s, rho
 
-    def forward(self, lon, lat, r):
+    def forward(self, lon, lat, r, return_gradients=False):
         """
         Always returns:
           - U_neg (Nx1) for modes U/g_indirect, or g_pred (Nx3) for g_direct
@@ -507,35 +569,61 @@ class PINN(nn.Module):
         r   = r.to(self.device).float().requires_grad_(True)
 
         lon_s, lat_s, rho = self._scale_inputs(lon, lat, r)
+        if self.mode == "U":
+            if return_gradients:
+                with torch.set_grad_enabled(True):
+                    x = torch.stack([lon_s, lat_s, rho], dim=-1)
+                    U_raw = self.net(x)
+                    inputs = [lon, lat, r]
+                    dU_dlon, dU_dlat, dU_dr = torch.autograd.grad(
+                        outputs=U_raw,
+                        inputs=inputs,
+                        grad_outputs=torch.ones_like(U_raw),
+                        create_graph=self.training,
+                        retain_graph=self.training,
+                        only_inputs=True
+                        )
 
-        if self.mode == "g_direct":
+                    eps = 1e-12
+                    r_safe = torch.clamp(r, min=eps)
+                    cos_lat = torch.clamp(torch.cos(lat), min=eps)  # avoid division blow-up near poles
+                    g_r = -dU_dr
+                    g_phi = -(1.0 / r_safe) * dU_dlat
+                    g_lam = -(1.0 / (r_safe * cos_lat)) * dU_dlon
+
+                    return U_raw, (g_phi, g_lam, g_r)
+            else:
+                x = torch.stack([lon_s, lat_s, rho], dim=-1)
+                U_raw = self.net(x)
+                return U_raw
+
+        elif self.mode == "g_direct":
             x = torch.stack([lon_s, lat_s, rho], dim=-1)
-            g_pred = self.net(x)  # Nx3: (g_theta, g_phi, g_r) in whatever convention you train
-            # If you train only 2 components, change out_features and return Nx2.
+            g_pred = self.net(x)
             return g_pred
 
-        # U and g_indirect: compute U and derivatives
-        x = torch.stack([lon_s, lat_s, rho], dim=-1)
-        U_raw = self.net(x)          # Nx1
+        elif self.mode == "g_indirect":
+            x = torch.stack([lon_s, lat_s, rho], dim=-1)
+            U_raw = self.net(x)          # Nx1
 
-        dU_dlon, dU_dlat, dU_dr = torch.autograd.grad(
-            outputs=U_raw,
-            inputs=[lon, lat, r],
-            grad_outputs=torch.ones_like(U_raw),
-            create_graph=self.training,
-            retain_graph=self.training,  # set True only if you need another grad call on same graph
-            only_inputs=True
-        )
+            dU_dlon, dU_dlat, dU_dr = torch.autograd.grad(
+                outputs=U_raw,
+                inputs=[lon, lat, r],
+                grad_outputs=torch.ones_like(U_raw),
+                create_graph=self.training,
+                retain_graph=self.training,  # set True only if you need another grad call on same graph
+                only_inputs=True
+            )
 
-        eps = 1e-12
-        r_safe = torch.clamp(r, min=eps)
-        cos_lat = torch.clamp(torch.cos(lat), min=eps)  # avoid division blow-up near poles
+            eps = 1e-12
+            r_safe = torch.clamp(r, min=eps)
+            cos_lat = torch.clamp(torch.cos(lat), min=eps)  # avoid division blow-up near poles
 
-        g_r = -dU_dr
-        g_phi = -(1.0 / r_safe) * dU_dlat
-        g_lam = -(1.0 / (r_safe * cos_lat)) * dU_dlon
+            g_r = -dU_dr
+            g_phi = -(1.0 / r_safe) * dU_dlat
+            g_lam = -(1.0 / (r_safe * cos_lat)) * dU_dlon
 
-        return U_raw, (g_phi, g_lam, g_r)
+            return U_raw, (g_phi, g_lam, g_r)
 
 class Gravity(pl.LightningModule):
     def __init__(self, model_cfg, scaler, lr=1e-4):
@@ -554,15 +642,15 @@ class Gravity(pl.LightningModule):
             self.mode = model_cfg.get("mode", "U")
 
 
-        elif arch == "pinn":
+        elif arch == "mands2022":
             model_cfg = dict(model_cfg)
             model_cfg["scaler"] = scaler
-            self.model = PINN(**model_cfg)
+            self.model = MANDS2022(**model_cfg)
             self.mode = model_cfg.get("mode", "U")
 
         else:
             raise ValueError(
-                f"Unknown architecture '{arch}'. Expected 'sirensh', 'linearsh', or 'pinn'."
+                f"Unknown architecture '{arch}'. Expected 'sirensh', 'linearsh', or 'mands2022'."
             )
 
         self.scaler = scaler
@@ -588,9 +676,6 @@ class Gravity(pl.LightningModule):
         elif self.mode == "g_direct":
             loss = self.criterion(y_pred, y_true)
             return (None, loss, None, None, loss) if return_components else loss
-
-
-
 
         elif self.mode == "g_indirect":
             if isinstance(y_pred, (tuple, list)):
@@ -624,13 +709,6 @@ class Gravity(pl.LightningModule):
 
         self.log("train_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True)
 
-        component_names = ["U", "g", "grad", "consistency"]
-        for name, comp in zip(component_names, loss_components[:-1]):
-            if comp is not None:
-                if isinstance(comp, torch.Tensor) and comp.ndim > 0:
-                    comp = comp.mean()
-                self.log(f"train_{name}_loss", comp, on_step=False, on_epoch=True)
-
         lr = self.trainer.optimizers[0].param_groups[0]['lr']
         self.log("lr", lr, on_step=False, on_epoch=True)
 
@@ -652,14 +730,6 @@ class Gravity(pl.LightningModule):
             total_loss = total_loss.mean()
 
         self.log("val_loss", total_loss, on_epoch=True, prog_bar=True)
-
-        component_names = ["U", "g", "grad", "consistency"]
-
-        for name, comp in zip(component_names, loss_components[:-1]):
-            if comp is not None:
-                if isinstance(comp, torch.Tensor) and comp.ndim > 0:
-                    comp = comp.mean()
-                self.log(f"val_{name}_loss", comp, on_epoch=True)
 
 
         return total_loss

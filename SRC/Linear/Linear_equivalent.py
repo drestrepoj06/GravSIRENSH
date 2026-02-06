@@ -7,7 +7,6 @@ import numpy as np
 import pyshtools as pysh
 import pandas as pd
 import os
-from scipy.interpolate import RegularGridInterpolator
 import time
 
 class LinearEquivalentGenerator:
