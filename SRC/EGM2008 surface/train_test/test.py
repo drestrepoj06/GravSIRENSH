@@ -9,14 +9,14 @@ import multiprocessing as mp
 import time
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.Location_encoder.Coordinates_network import SH_SIREN, SH_LINEAR, MANDS2022, MANDS2022Scaler, Scaler
-from SRC.Linear.Linear_equivalent import LinearEquivalentGenerator
+from SRC.location_encoder.coordinates_network import SH_SIREN, SH_LINEAR, MANDS2022, MANDS2022Scaler, Scaler
+from SRC.linear_equivalent import LinearEquivalentGenerator
 
 
 def main(run_path=None):
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    runs_dir = os.path.join(base_dir, "Outputs", "Runs")
-    data_dir = os.path.join(base_dir, "Data")
+    runs_dir = os.path.join(base_dir, "outputs", "runs")
+    data_dir = os.path.join(base_dir, "data")
 
     test_path = os.path.join(data_dir, "Samples_2190-2_250k_r0_test.parquet")
     test_df = pd.read_parquet(test_path)
@@ -138,7 +138,7 @@ def main(run_path=None):
     else:
         raise ValueError(f"Unknown architecture '{arch}'. Expected 'sirensh', 'linearsh', or 'mands2022'.")
 
-    cache_path = os.path.join(base_dir, "Data", "cache_test.npy")
+    cache_path = os.path.join(base_dir, "data", "cache_test.npy")
 
     if arch == "mands2022":
         model = ModelClass(

@@ -10,12 +10,12 @@ from datetime import datetime
 import json
 import lightning.pytorch as pl
 from lightning.pytorch.loggers import WandbLogger
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from lightning.pytorch.callbacks import ModelCheckpoint
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.Location_encoder.Coordinates_network import MANDS2022Scaler, Scaler, Gravity
-import SRC.Training_test.Test as test_script
-from SRC.Visualizations.Geographic_plots import GravityDataPlotter
+from SRC.location_encoder.coordinates_network import MANDS2022Scaler, Scaler, Gravity
+import SRC.train_test.test as test_script
+from SRC.visualizations.geographic_plots import GravityDataPlotter
 
 
 class GravityDataset(torch.utils.data.Dataset):
@@ -78,7 +78,7 @@ class GravityDataModule(pl.LightningDataModule):
 
 def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    data_path = os.path.join(base_dir, 'Data', 'Samples_2190-2_5.0M_r0_train.parquet')
+    data_path = os.path.join(base_dir, 'data', 'Samples_2190-2_5.0M_r0_train.parquet')
 
     if torch.cuda.is_available():
         gpu_id = torch.cuda.current_device()
@@ -92,17 +92,17 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "U"
+    mode = "g_direct"
     lr = 5e-3
     batch_size = 262144
     lmax = 3
-    hidden_layers = 2
-    hidden_features = 40
+    hidden_layers = 8
+    hidden_features = 31
     first_omega_0 = 20
     hidden_omega_0 = 1.0
     exclude_degrees = None
     epochs = 1
-    arch = "sirensh"  # "sirensh, linearsh or mands2022"
+    arch = "mands2022"  # "sirensh, linearsh or mands2022"
 
     if arch == "mands2022":
         scaler = MANDS2022Scaler().fit(train_df)
@@ -133,7 +133,7 @@ def main():
     else:
         raise ValueError(f"Unknown architecture '{arch}'")
 
-    run_dir = os.path.join(base_dir, "Outputs", "Runs", run_name)
+    run_dir = os.path.join(base_dir, "outputs", "runs", run_name)
     os.makedirs(run_dir, exist_ok=True)
 
     if arch == "mands2022":
@@ -154,7 +154,7 @@ def main():
             hidden_omega_0=hidden_omega_0,
             device=device,
             scaler=scaler,
-            cache_path=os.path.join(base_dir, "Data", "cache_train.npy"),
+            cache_path=os.path.join(base_dir, "data", "cache_train.npy"),
             exclude_degrees=exclude_degrees,
             mode=mode,
             arch=arch,
@@ -166,7 +166,7 @@ def main():
             hidden_layers=hidden_layers,
             device=device,
             scaler=scaler,
-            cache_path=os.path.join(base_dir, "Data", "cache_train.npy"),
+            cache_path=os.path.join(base_dir, "data", "cache_train.npy"),
             exclude_degrees=exclude_degrees,
             mode=mode,
             arch=arch,
@@ -316,7 +316,7 @@ def main():
     print(f"\nModel saved at: {model_path}")
     print(f"Config saved at: {config_path}")
 
-    data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_r0_test.parquet")
+    data_path = os.path.join(base_dir, "data", "Samples_2190-2_250k_r0_test.parquet")
     test_script.main(run_path=run_dir)
 
     PLOTS_BY_MODE = {

@@ -8,7 +8,7 @@ import pandas as pd
 import pyshtools as pysh
 
 class GravityDataGenerator:
-    def __init__(self, lmax_full, lmax_base, n_samples, mode="train", output_dir="Data", altitude=0.0):
+    def __init__(self, lmax_full, lmax_base, n_samples, mode="train", output_dir="data", altitude=0.0):
         self.lmax_full = lmax_full
         self.lmax_base = lmax_base
         self.n_samples = n_samples
@@ -167,7 +167,7 @@ class GravityDataGenerator:
 
 def main():
     base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-    data_dir = os.path.join(base_dir, 'Data')
+    data_dir = os.path.join(base_dir, 'data')
     os.makedirs(data_dir, exist_ok=True)
 
     lmax_full = 2190
