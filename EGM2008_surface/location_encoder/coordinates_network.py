@@ -5,8 +5,8 @@ jhonr
 
 import torch
 import torch.nn as nn
-from SRC.location_encoder.SH_embedding import SHEmbedding
-from SRC.location_encoder.networks import SIRENNet, LINEARNet, GELUNet
+from EGM2008_surface.location_encoder.SH_embedding import SHEmbedding
+from EGM2008_surface.location_encoder.networks import SIRENNet, LINEARNet, GELUNet
 import lightning.pytorch as pl
 import numpy as np
 

@@ -9,8 +9,8 @@ import multiprocessing as mp
 import time
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.location_encoder.coordinates_network import SH_SIREN, SH_LINEAR, MANDS2022, MANDS2022Scaler, Scaler
-from SRC.linear_equivalent import LinearEquivalentGenerator
+from EGM2008_surface.location_encoder.coordinates_network import SH_SIREN, SH_LINEAR, MANDS2022, MANDS2022Scaler, Scaler
+from EGM2008_surface.linear_equivalent import LinearEquivalentGenerator
 
 
 def main(run_path=None):

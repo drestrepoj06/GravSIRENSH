@@ -13,9 +13,9 @@ from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks import ModelCheckpoint
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
-from SRC.location_encoder.coordinates_network import MANDS2022Scaler, Scaler, Gravity
-import SRC.train_test.test as test_script
-from SRC.visualizations.geographic_plots import GravityDataPlotter
+from EGM2008_surface.location_encoder.coordinates_network import MANDS2022Scaler, Scaler, Gravity
+import EGM2008_surface.train_test.test as test_script
+from EGM2008_surface.visualizations.geographic_plots import GravityDataPlotter
 
 
 class GravityDataset(torch.utils.data.Dataset):
@@ -96,8 +96,8 @@ def main():
     lr = 5e-3
     batch_size = 262144
     lmax = 3
-    hidden_layers = 8
-    hidden_features = 31
+    hidden_layers = 2
+    hidden_features = 8
     first_omega_0 = 20
     hidden_omega_0 = 1.0
     exclude_degrees = None
