@@ -77,7 +77,7 @@ class GravityDataModule(pl.LightningDataModule):
                           shuffle=False, num_workers=8, pin_memory=torch.cuda.is_available(), persistent_workers=True)
 
 def main():
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     data_path = os.path.join(base_dir, 'data', 'Samples_2190-2_5.0M_r0_train.parquet')
 
     if torch.cuda.is_available():

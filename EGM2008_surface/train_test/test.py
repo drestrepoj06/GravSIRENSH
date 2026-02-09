@@ -14,7 +14,7 @@ from EGM2008_surface.linear_equivalent import LinearEquivalentGenerator
 
 
 def main(run_path=None):
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__),  '..'))
     runs_dir = os.path.join(base_dir, "outputs", "runs")
     data_dir = os.path.join(base_dir, "data")
 

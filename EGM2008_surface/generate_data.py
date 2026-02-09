@@ -166,7 +166,7 @@ class GravityDataGenerator:
         return df
 
 def main():
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)))
     data_dir = os.path.join(base_dir, 'data')
     os.makedirs(data_dir, exist_ok=True)
 
