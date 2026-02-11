@@ -490,11 +490,6 @@ class GravityDataPlotter:
             pred_col = "predicted_dg_total_mGal"
             unit = "mGal"
             symbol = "Δg"
-        elif self.target_type == "gradients":
-            true_col = "dg_total_mGal"
-            pred_col = "predicted_g_mag_mGal"
-            unit = "mGal"
-            symbol = "Δg"
         else:
             true_col = "dU_m2_s2"
             pred_col = "predicted_dU_m2_s2"
@@ -519,7 +514,7 @@ class GravityDataPlotter:
             "NN": df[pred_col].to_numpy(),
         }
 
-        if self.linear_available and self.target_type == "acceleration":
+        if self.linear_available:
             # your loader currently stores magnitude arrays only for linear
             if subset in self.linear_preds["equiv"]:
                 series["Linear equiv"] = self.linear_preds["equiv"][subset]

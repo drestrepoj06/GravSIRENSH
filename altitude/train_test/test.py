@@ -212,7 +212,7 @@ def main(run_path=None):
         """
         Runs a SINGLE forward pass for the given subset (A, F, or C),
         computes RMSEs, saves predictions to .npy, and returns:
-            results:      dict with rmse_U, rmse_g, rmse_grad, rmse_consistency (some may be None)
+            results:      dict with rmse_U, rmse_g (some may be None)
             pred_stats:   dict of stats for predicted fields
             true_stats:   dict of stats for true fields
         """
@@ -252,16 +252,8 @@ def main(run_path=None):
             lon_req = lon.detach().clone().requires_grad_(True)
             lat_req = lat.detach().clone().requires_grad_(True)
             r_req = r.detach().clone().requires_grad_(True)
-            U_scaled, grads = model(lon_req, lat_req, r_req, return_gradients=True)
+            U_scaled = model(lon_req, lat_req, r_req)
             preds = None
-
-        elif mode == "g_indirect":
-            lon_req = lon.detach().clone().requires_grad_(True)
-            lat_req = lat.detach().clone().requires_grad_(True)
-            r_req = r.detach().clone().requires_grad_(True)
-            U_scaled, grads = model(lon_req, lat_req, r_req)
-            preds = None
-
         if device.type == "cuda":
             torch.cuda.synchronize()
         t_pred = time.perf_counter() - t0
@@ -283,24 +275,16 @@ def main(run_path=None):
             U_pred = None
 
 
-        elif mode in ["U", "g_indirect"]:
+        elif mode == "U":
+            g_theta = g_phi = g_r = g_mag = None
 
             U_pred = scaler.unscale_potential(U_scaled).detach()
-            g_scaled = torch.stack(grads, dim=1)
-            g_phys = unscale_g(scaler, g_scaled).detach()
-            g_theta = g_phys[:, 0]
-            g_phi = g_phys[:, 1]
-            g_r = g_phys[:, 2]
-            g_mag = torch.sqrt(g_theta ** 2 + g_phi ** 2 + g_r ** 2)
-
 
         else:
             raise ValueError(f"Unsupported mode: {mode}")
 
         rmse_U = None
         rmse_g = None
-        rmse_grad = None
-        rmse_consistency = None
 
         if U_pred is not None and true_U is not None:
             rmse_U = torch.sqrt(torch.mean((U_pred.ravel() - true_U) ** 2)).item()
@@ -314,20 +298,18 @@ def main(run_path=None):
 
         results = {
             "rmse_U": rmse_U,
-            "rmse_g": rmse_g,
-            "rmse_grad": rmse_grad,
-            "rmse_consistency": rmse_consistency,
+            "rmse_g": rmse_g
         }
 
         prefix = os.path.join(latest_run, f"test_results_{prefix_tag}")
 
         if U_pred is not None:
             np.save(f"{prefix}_U.npy", U_pred.cpu().numpy().ravel())
-
-        np.save(f"{prefix}_g_theta.npy", g_theta.cpu().numpy())
-        np.save(f"{prefix}_g_phi.npy", g_phi.cpu().numpy())
-        np.save(f"{prefix}_g_rad.npy", g_r.cpu().numpy())
-        np.save(f"{prefix}_g_mag.npy", g_mag.cpu().numpy())
+        if g_theta is not None:
+            np.save(f"{prefix}_g_theta.npy", g_theta.cpu().numpy())
+            np.save(f"{prefix}_g_phi.npy", g_phi.cpu().numpy())
+            np.save(f"{prefix}_g_rad.npy", g_r.cpu().numpy())
+            np.save(f"{prefix}_g_mag.npy", g_mag.cpu().numpy())
 
 
         def stats(arr):
@@ -338,12 +320,14 @@ def main(run_path=None):
                 "std": float(arr.std()),
             }
 
-        pred_stats = {
-            "g_theta": stats(g_theta.cpu().numpy()),
-            "g_phi": stats(g_phi.cpu().numpy()),
-            "g_r": stats(g_r.cpu().numpy()),
-            "g_mag": stats(g_mag.cpu().numpy()),
-        }
+        pred_stats = {}
+        if g_theta is not None:
+            pred_stats = {
+                "g_theta": stats(g_theta.cpu().numpy()),
+                "g_phi": stats(g_phi.cpu().numpy()),
+                "g_r": stats(g_r.cpu().numpy()),
+                "g_mag": stats(g_mag.cpu().numpy()),
+            }
 
         if U_pred is not None:
             pred_stats["U"] = stats(U_pred.cpu().numpy())

@@ -28,13 +28,11 @@ class GravityDataset(torch.utils.data.Dataset):
         self.lat = torch.tensor(df["lat"].values, dtype=torch.float32)
 
         alt = torch.tensor(df["altitude_m"].values, dtype=torch.float32)
-        self.r = self.r_scale + alt  # meters (radius)
+        self.r = self.r_scale + alt
 
         def _scale_g(g_phys):
-            # SH scaler path
             if hasattr(self.scaler, "scale_gravity"):
                 return self.scaler.scale_gravity(g_phys)
-            # MANDS2022 scaler path (uniform)
             if hasattr(self.scaler, "scale_accel_uniform"):
                 return self.scaler.scale_accel_uniform(g_phys)
             raise AttributeError(
@@ -46,7 +44,7 @@ class GravityDataset(torch.utils.data.Dataset):
             U_scaled = self.scaler.scale_potential(U_phys)
             self.y = torch.tensor(U_scaled, dtype=torch.float32).unsqueeze(1)
 
-        elif mode in ["g_direct", "g_indirect"]:
+        elif mode == "g_direct":
             cols = ["dg_theta_mGal", "dg_phi_mGal", "dg_r_mGal"]
             g_phys = df[cols].values
             g_scaled = _scale_g(g_phys)
@@ -97,17 +95,17 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "g_direct"
+    mode = "U"
     lr = 5e-3
     batch_size = 262144
-    lmax = 3
+    lmax = 0
     hidden_layers = 2
     hidden_features = 8
     first_omega_0 = 20
     hidden_omega_0 = 1.0
     exclude_degrees = None
     epochs = 1
-    arch = "mands2022"  # "sirensh, linearsh or mands2022"
+    arch = "sirensh"  # "sirensh, linearsh or mands2022"
 
     if arch == "mands2022":
         scaler = MANDS2022Scaler().fit(train_df)
@@ -159,7 +157,7 @@ def main():
             hidden_omega_0=hidden_omega_0,
             device=device,
             scaler=scaler,
-            cache_path=os.path.join(base_dir, "Data", "cache_train.npy"),
+            cache_path=os.path.join(base_dir, "data", "cache_train.npy"),
             exclude_degrees=exclude_degrees,
             mode=mode,
             arch=arch,
@@ -304,12 +302,11 @@ def main():
     print(f"\nModel saved at: {model_path}")
     print(f"Config saved at: {config_path}")
 
-    data_path = os.path.join(base_dir, "Data", "Samples_2190-2_250k_altUniform0-420000_test_shells_43_interp.parquet")
+    data_path = os.path.join(base_dir, "data", "Samples_2190-2_250k_altUniform0-420000_test_shells_43_interp.parquet")
     test_script.main(run_path=run_dir)
 
     PLOTS_BY_MODE = {
-        "U": ["potential", "acceleration"],
-        "g_indirect": ["potential", "acceleration"],
+        "U": ["potential"],
         "g_direct": ["acceleration"]
     }
 
@@ -335,7 +332,6 @@ def main():
                 target_type=target
             )
 
-            # 1) Distribution map(s) + 2) Prediction/linear scatter maps for each altitude slice
             for sl in ALT_SLICES:
                 plotter.plot_map(
                     alt_center_m=sl["alt_center_m"],
@@ -347,8 +343,6 @@ def main():
                     alt_half_width_m=sl["alt_half_width_m"]
                 )
 
-            # 3) RMSE by altitude bins (no slicing; it *is* the altitude plot)
-            #    Do this once per target (and optionally per subset)
             for subset in ["A", "F", "C"]:
                 plotter.plot_rmse_by_altitude(subset=subset)
 
