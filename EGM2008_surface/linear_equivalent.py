@@ -178,7 +178,13 @@ class LinearEquivalentGenerator:
             label=""
     ):
 
-        df_test = pd.read_parquet(self.data_path)
+        if isinstance(self.data_path, pd.DataFrame):
+            df_test = self.data_path.copy()
+        elif isinstance(self.data_path, str):
+            df_test = pd.read_parquet(self.data_path)
+        else:
+            raise TypeError("data_source must be a DataFrame or a parquet file path.")
+
         mask = np.abs(df_test["lat"].values) < 89.9999
         df_test = df_test[mask].reset_index(drop=True)
 
@@ -219,11 +225,13 @@ class LinearEquivalentGenerator:
         g_phi = (g[:, 2] * 1e5).astype("float32")
         g_mag = np.sqrt(g_theta ** 2 + g_phi ** 2 + g_r**2)
 
-        subsets = {
-            "A": A_idx,
-            "F": F_idx,
-            "C": C_idx
-        }
+        subsets = {}
+        if A_idx is not None:
+            subsets["A"] = A_idx
+        if F_idx is not None:
+            subsets["F"] = F_idx
+        if C_idx is not None:
+            subsets["C"] = C_idx
 
         out = {}
         for s, idx in subsets.items():

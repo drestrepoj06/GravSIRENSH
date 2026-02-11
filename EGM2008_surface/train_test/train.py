@@ -15,6 +15,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from EGM2008_surface.location_encoder.coordinates_network import MANDS2022Scaler, Scaler, Gravity
 import EGM2008_surface.train_test.test as test_script
+import EGM2008_surface.train_test.runtime as runtime_script
 from EGM2008_surface.visualizations.geographic_plots import GravityDataPlotter
 
 
@@ -103,6 +104,7 @@ def main():
     exclude_degrees = None
     epochs = 1
     arch = "mands2022"  # "sirensh, linearsh or mands2022"
+    runtime = True # Variable to assess whether runtime experiment will be conducted or not
 
     if arch == "mands2022":
         scaler = MANDS2022Scaler().fit(train_df)
@@ -315,33 +317,36 @@ def main():
 
     print(f"\nModel saved at: {model_path}")
     print(f"Config saved at: {config_path}")
-
-    data_path = os.path.join(base_dir, "data", "Samples_2190-2_250k_r0_test.parquet")
-    test_script.main(run_path=run_dir)
-
-    PLOTS_BY_MODE = {
-        "U": ["potential"],
-        "g_direct": ["acceleration"]
-    }
-
-    targets_to_plot = PLOTS_BY_MODE.get(mode, None)
-
-    if targets_to_plot is None:
-        print(f"Mode '{mode}' not recognized for plotting.")
+    if runtime:
+        data_path = os.path.join(base_dir, "data", "Samples_2190-2_250k_r0_test.parquet")
+        runtime_script.main(run_path=run_dir)
     else:
-        for target in targets_to_plot:
-            print(f"Plotting {target} maps...")
+        data_path = os.path.join(base_dir, "data", "Samples_2190-2_250k_r0_test.parquet")
+        test_script.main(run_path=run_dir)
 
-            plotter = GravityDataPlotter(
-                data_path=data_path,
-                output_dir=run_dir,
-                predictions_dir=run_dir,
-                linear_dir=run_dir,
-                target_type=target
-            )
+        PLOTS_BY_MODE = {
+            "U": ["potential"],
+            "g_direct": ["acceleration"]
+        }
 
-            plotter.plot_map()
-            plotter.plot_scatter()
+        targets_to_plot = PLOTS_BY_MODE.get(mode, None)
+
+        if targets_to_plot is None:
+            print(f"Mode '{mode}' not recognized for plotting.")
+        else:
+            for target in targets_to_plot:
+                print(f"Plotting {target} maps...")
+
+                plotter = GravityDataPlotter(
+                    data_path=data_path,
+                    output_dir=run_dir,
+                    predictions_dir=run_dir,
+                    linear_dir=run_dir,
+                    target_type=target
+                )
+
+                plotter.plot_map()
+                plotter.plot_scatter()
 
 if __name__ == "__main__":
     import multiprocessing as mp
