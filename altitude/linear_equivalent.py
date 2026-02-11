@@ -225,7 +225,9 @@ class LinearEquivalentGenerator:
         r_f = (r0 + df_test["altitude_m"].values).astype(lat_f.dtype)
 
         # --- build r_grid from the unique altitude levels in the test dataframe ---
-        alt_levels = np.sort(df_test["altitude_m"].unique().astype(np.float64))
+        alt = df_test["altitude_m"].to_numpy(dtype=np.float64)
+        nr = 200
+        alt_levels = np.linspace(alt.min(), alt.max(), nr, dtype=np.float64)
         r_grid = (r0 + alt_levels).astype(np.float64)
         # RegularGridInterpolator requires strictly increasing
         # (alt_levels sorted -> r_grid sorted)

@@ -138,7 +138,7 @@ def main(run_path=None):
     else:
         raise ValueError(f"Unknown architecture '{arch}'. Expected 'sirensh', 'linearsh', or 'mands2022'.")
 
-    cache_path = os.path.join(base_dir, "Data", "cache_test.npy")
+    cache_path = os.path.join(base_dir, "data", "cache_test.npy")
 
     if arch == "mands2022":
         model = ModelClass(

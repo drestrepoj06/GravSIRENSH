@@ -294,7 +294,7 @@ class GravityDataPlotter:
         """Helper to iterate over subsets A/F/C."""
         return ["A", "F", "C"]
 
-    def plot_scatter(self, color_by=None, s=0.5, alpha=0.8, cmap="viridis"):
+    def plot_scatter(self, s=0.5, alpha=0.8, cmap="viridis"):
         """
         Subset-aware plotting:
             - A (All)
@@ -330,7 +330,7 @@ class GravityDataPlotter:
             os.makedirs(subset_dir, exist_ok=True)
 
             plt.figure(figsize=(10, 5))
-            color_data = df[color_by] if (color_by in df.columns) else df[true_col]
+            color_data = df[true_col]
 
             sc = plt.scatter(
                 df["lon"], df["lat"],
@@ -340,7 +340,7 @@ class GravityDataPlotter:
             plt.xlabel("Longitude (°)")
             plt.ylabel("Latitude (°)")
             plt.title(f"Sample Distribution ({subset}) ({symbol}, Lmax={self.lmax})")
-            plt.colorbar(sc, label=color_by or true_col)
+            plt.colorbar(sc, label="mGal" if self.target_type == "acceleration"  else "m²/s²")
             plt.tight_layout()
 
             out = os.path.join(subset_dir, f"Scatter_Samples_{subset}_{self.target_type}.png")
