@@ -7,6 +7,10 @@ import pandas as pd
 from datetime import datetime
 import multiprocessing as mp
 import time
+import subprocess
+import platform
+
+from pathlib import Path
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from EGM2008_surface.location_encoder.coordinates_network import SH_SIREN, SH_LINEAR, MANDS2022, MANDS2022Scaler, Scaler
@@ -114,7 +118,9 @@ def main(run_path=None):
         ModelClass = MANDS2022
     else:
         raise ValueError(f"Unknown architecture '{arch}'. Expected 'sirensh', 'linearsh', or 'mands2022'.")
-
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t_setup0 = time.perf_counter()
     cache_path = None
 
     if arch == "mands2022":
@@ -163,6 +169,10 @@ def main(run_path=None):
 
     model = model.to(device)
     model.eval()
+
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    t_setup_s = time.perf_counter() - t_setup0
 
     def build_tensors_from_df(df, device):
         lon = torch.tensor(df["lon"].values, dtype=torch.float32, device=device)
@@ -326,9 +336,9 @@ def main(run_path=None):
         if true_U is not None:
             true_stats["U"] = stats(true_U.cpu().numpy())
 
-        return results, pred_stats, true_stats, timing_nn
+        return results, pred_stats, true_stats, t_pred
 
-    res, pred, true, timing = evaluate_and_save_dataset(
+    res, pred, true, t_pred = evaluate_and_save_dataset(
         model, mode,
         lon, lat,
         U, theta, phi, rad, mag,
@@ -436,7 +446,7 @@ def main(run_path=None):
 
         linear_results[label]["sample"] = evaluate_linear_baseline(
             paths=paths,
-            subset="sample",
+            subset="A",
             run_path=run_path,
             true_U=sample["dU_m2_s2"].to_numpy() if "U" in paths else None,
             true_theta=sample["dg_theta_mGal"].to_numpy(),
@@ -444,6 +454,55 @@ def main(run_path=None):
             true_rad=sample["dg_r_mGal"].to_numpy(),
         )
 
+    if torch.cuda.is_available():
+        runtime_gpu_name = torch.cuda.get_device_name(0)
+    else:
+        runtime_gpu_name = None
+
+    def get_cpu_name():
+        system = platform.system()
+
+        # Windows
+        if system == "Windows":
+            try:
+                cmd = ["powershell", "-NoProfile", "-Command",
+                       "(Get-CimInstance Win32_Processor).Name"]
+                out = subprocess.check_output(cmd, text=True).strip()
+                if out:
+                    return out.splitlines()[0]
+            except Exception:
+                pass
+            return platform.processor() or platform.machine()
+
+        # Linux / HPC
+        # 1) /proc/cpuinfo
+        try:
+            if os.path.exists("/proc/cpuinfo"):
+                with open("/proc/cpuinfo", "r", encoding="utf-8", errors="ignore") as f:
+                    for line in f:
+                        if line.lower().startswith("model name"):
+                            val = line.split(":", 1)[1].strip()
+                            if val:
+                                return val
+        except Exception:
+            pass
+
+        # 2) lscpu (only if present)
+        try:
+            out = subprocess.check_output(["bash", "-lc", "command -v lscpu && lscpu"], text=True).strip()
+            if out and "Model name" in out:
+                for line in out.splitlines():
+                    if "Model name" in line:
+                        val = line.split(":", 1)[1].strip()
+                        if val:
+                            return val
+        except Exception:
+            pass
+
+        # 3) fallback that never returns null
+        return platform.machine() or "unknown"
+
+    runtime_cpu_name = get_cpu_name()
     meta = {
         "mode": mode,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -461,10 +520,14 @@ def main(run_path=None):
                 "Samples": {
                     "equiv": lin_equiv_timing,
                     "model": lin_model_timing if lin_model is not None else None
-                }
+                },
+            "device": runtime_cpu_name
             },
             "nn": {
-                "Samples": timing
+                "t_setup_s": float(t_setup_s),
+                "t_pred_s": float(t_pred),
+                "t_total_s": float(t_setup_s + t_pred),
+                "device": runtime_gpu_name if runtime_gpu_name is not None else runtime_cpu_name
             }
         }
     }
@@ -482,3 +545,5 @@ def main(run_path=None):
 if __name__ == "__main__":
     mp.freeze_support()
     main()
+
+#main(run_path = str(Path("C:/Users/jhonr/Documents/MGI_Thesis/Results/Runs_runtime/sirensh_LR=0.0005_mode=g_direct_BS=262144_lmax=15_layers=6_neurons=10_first_omega=5.0_hidden_omega=1.0_exclude_degrees=None")))

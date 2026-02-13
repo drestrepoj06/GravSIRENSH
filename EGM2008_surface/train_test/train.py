@@ -97,14 +97,14 @@ def main():
     lr = 5e-3
     batch_size = 262144
     lmax = 3
-    hidden_layers = 20
-    hidden_features = 8
+    hidden_layers = 8
+    hidden_features = 291
     first_omega_0 = 20
     hidden_omega_0 = 1.0
     exclude_degrees = None
     epochs = 1
     arch = "mands2022"  # "sirensh, linearsh or mands2022"
-    runtime = True # Variable to assess whether runtime experiment will be conducted or not
+    runtime = False # Variable to assess whether runtime experiment will be conducted or not
 
     if arch == "mands2022":
         scaler = MANDS2022Scaler().fit(train_df)

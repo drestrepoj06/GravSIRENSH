@@ -26,6 +26,8 @@ class SHEmbedding:
         self.use_theta_lut = use_theta_lut
         if self.lmax == 0:
             self.use_theta_lut = False
+        if cache_path == None:
+            self.use_theta_lut = False
         self.n_theta = n_theta
         self.exclude_degrees = exclude_degrees or []
 
@@ -124,9 +126,62 @@ class SHEmbedding:
         if self.use_theta_lut:
             self._prepare_lut(device)
             A_pack = self._interp_A_theta(theta)
+        else:
+            A_pack = self._amps_onthefly(theta, device=device)
 
         Y = self._assemble_torch(phi, A_pack, self.lmax)
         return Y
+
+    def _amps_onthefly(self, theta_rad: torch.Tensor, device=None, chunk=4096):
+        theta_deg = (theta_rad.detach().cpu().numpy() * 180.0 / np.pi).astype(np.float32)
+        N = int(theta_deg.shape[0])
+        S = (self.lmax + 1) * (self.lmax + 2) // 2
+
+        out = np.empty((N, S), dtype=np.float32)
+
+        for i in range(0, N, chunk):
+            th = theta_deg[i:i + chunk]
+            n = int(th.shape[0])
+
+            ylm = pysh.expand.spharm(
+                self.lmax, th, 0.0,
+                normalization=self.normalization, kind="real"
+            )
+
+            blocks = []
+            for l in range(self.lmax + 1):
+                a = ylm[0, l, 0:l + 1]  # unknown shape depending on pysh
+
+                a = np.asarray(a, dtype=np.float32)
+
+                # Normalize to shape (n, l+1)
+                if a.ndim == 1:
+                    # could be (l+1,) when n==1
+                    a = a.reshape(1, -1)
+                elif a.ndim == 2:
+                    # could be (n, l+1) or (l+1, n)
+                    if a.shape[0] == (l + 1) and a.shape[1] == n:
+                        a = a.T
+                    elif a.shape[0] == n and a.shape[1] == (l + 1):
+                        pass
+                    else:
+                        raise ValueError(
+                            f"Unexpected slice shape for l={l}: {a.shape}, n={n}"
+                        )
+                else:
+                    raise ValueError(
+                        f"Unexpected ndim for l={l}: {a.ndim}, shape={a.shape}"
+                    )
+
+                blocks.append(a)
+
+            A = np.concatenate(blocks, axis=1).astype(np.float32)  # (n, S)
+            out[i:i + n] = A
+
+        A_t = torch.from_numpy(out).float()
+        if device is not None:
+            A_t = A_t.to(device, non_blocking=True)
+        return A_t
 
     def _assemble_torch(self, phi, A_pack, lmax):
         """

@@ -27,11 +27,11 @@ class LinearEquivalentGenerator:
         self.L_equiv = self.params_to_lmax(params)
 
         if self.lmax is not None:
+
             (
                 df_grid_model, model_dU_grid, model_lats,
                 model_lons, model_clm_full_g, model_clm_low_g, model_r0
             ) = self.generate_linear_equiv(self.lmax)
-
             self.model = {
                 "df_grid": df_grid_model,
                 "dU_grid": model_dU_grid,
@@ -196,26 +196,17 @@ class LinearEquivalentGenerator:
             (lats_grid, lons_grid), dU_grid,
             bounds_error=False, fill_value=None
         )
-        t0 = time.perf_counter()
         dU = interp(np.column_stack((lat_f, lon_f))).astype("float32")
-        t_interp = time.perf_counter() - t0
 
         t0 = time.perf_counter()
         g_full = clm_full_g.expand(lat=lat_f, lon=lon_f, r=r_f, lmax=L, degrees=True)
         t_full = time.perf_counter() - t0
 
-        t0 = time.perf_counter()
         g_low  = clm_low_g.expand(lat=lat_f, lon=lon_f, r=r_f, lmax=2, degrees=True)
-        t_low = time.perf_counter() - t0
 
-
-        t_total = t_interp + t_full + t_low
         timing = {
             "n_points": int(len(lat_f)),
-            "t_interp_s": float(t_interp),
-            "t_expand_full_s": float(t_full),
-            "t_expand_low_s": float(t_low),
-            "t_total_s": float(t_total),
+            "t_expand_full_s": float(t_full)
         }
 
         g = g_full - g_low
