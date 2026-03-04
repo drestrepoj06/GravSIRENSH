@@ -10,9 +10,7 @@ from EGM2008_surface.location_encoder.networks import SIRENNet, LINEARNet, GELUN
 import lightning.pytorch as pl
 import numpy as np
 
-# Scaling target outputs in the range [-1, 1],
-# based on the scaling preferred for SIRENNETS: https://github.com/vsitzmann/siren
-# https://github.com/vsitzmann/siren/blob/4df34baee3f0f9c8f351630992c1fe1f69114b5f/explore_siren.ipynb
+# Scaler of the hybrid SIREN(SH) and the linear(sh) methods using mean and std of the outputs
 class Scaler:
 
     def __init__(self, mode="U"):
@@ -189,7 +187,7 @@ class MANDS2022Scaler:
         return np.stack([lon, lat], axis=-1)
 
 # Based on the code https://github.com/MarcCoru/locationencoder/blob/main/locationencoder/locationencoder.py
-# But only for the encoder SH + Siren network and the autograd of Martin & Schaub (2022)
+# But only for the encoder SH + Siren network and the direct target prediction of Martin & Schaub (2022)
 
 class SH_SIREN(nn.Module):
     def __init__(
@@ -336,7 +334,7 @@ class SH_LINEAR(nn.Module):
         else:
             raise ValueError(f"Unsupported mode '{self.mode}'")
 
-# Class to replicate Martin & Schaub's (2022) architecture, but with a traditional loss
+# Class to replicate Martin & Schaub's (2022) architecture, but with a traditional loss (Traditional NN in their paper)
 
 class MANDS2022(nn.Module):
     def __init__(
@@ -351,9 +349,6 @@ class MANDS2022(nn.Module):
         self.device = device
         self.scaler = scaler
         self.mode = mode
-
-        if self.scaler is None or not hasattr(self.scaler, "scale_coords"):
-            raise ValueError("MANDS2022 requires a scaler with a .scale_coords(...) method.")
 
         out_features = 1 if mode == "U" else 3
         self.net = GELUNet(
@@ -411,11 +406,6 @@ class Gravity(pl.LightningModule):
             self.model = MANDS2022(**model_cfg)
             self.mode = model_cfg.get("mode", "U")
 
-        else:
-            raise ValueError(
-                f"Unknown architecture '{arch}'. Expected 'sirensh', 'linearsh', or 'mands2022'."
-            )
-
         self.scaler = scaler
         self.lr = lr
         self.criterion = nn.MSELoss()
@@ -423,18 +413,9 @@ class Gravity(pl.LightningModule):
     def forward(self, lon, lat):
         return self.model(lon, lat)
 
-    def _compute_loss(self, y_pred, y_true, return_components=False):
-
-        if self.mode == "U":
-            loss = self.criterion(y_pred.view(-1), y_true.view(-1))
-            return (loss, None, None, None, loss) if return_components else loss
-
-        elif self.mode == "g_direct":
-            loss = self.criterion(y_pred.view(-1), y_true.view(-1))
-            return (None, loss, None, None, loss) if return_components else loss
-
-        else:
-            raise ValueError(f"Unknown mode: {self.mode}")
+    def _compute_loss(self, y_pred, y_true):
+        loss = self.criterion(y_pred.view(-1), y_true.view(-1))
+        return loss
 
 
     def training_step(self, batch, batch_idx=None):
@@ -442,11 +423,7 @@ class Gravity(pl.LightningModule):
         lon_b, lat_b, y_true_b = [b.to(self.device) for b in batch]
         y_pred_b = self.model(lon_b, lat_b)
 
-        loss_components = self._compute_loss(y_pred_b, y_true_b, return_components=True)
-
-        total_loss = loss_components[-1]
-        if isinstance(total_loss, torch.Tensor) and total_loss.ndim > 0:
-            total_loss = total_loss.mean()
+        total_loss = self._compute_loss(y_pred_b, y_true_b)
 
         self.log("train_loss", total_loss, on_step=False, on_epoch=True, prog_bar=True)
 
@@ -460,11 +437,7 @@ class Gravity(pl.LightningModule):
             lon_b, lat_b, y_true_b = [b.to(self.device) for b in batch]
             y_pred_b = self.model(lon_b, lat_b)
 
-            loss_components = self._compute_loss(y_pred_b, y_true_b, return_components=True)
-
-            total_loss = loss_components[-1]
-            if isinstance(total_loss, torch.Tensor) and total_loss.ndim > 0:
-                total_loss = total_loss.mean()
+            total_loss = self._compute_loss(y_pred_b, y_true_b)
 
             self.log("val_loss", total_loss, on_epoch=True, prog_bar=True)
             return total_loss

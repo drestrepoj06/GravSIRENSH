@@ -546,4 +546,4 @@ if __name__ == "__main__":
     mp.freeze_support()
     main()
 
-#main(run_path = str(Path("C:/Users/jhonr/Documents/MGI_Thesis/Results/Runs_runtime/sirensh_LR=0.0005_mode=g_direct_BS=262144_lmax=15_layers=6_neurons=10_first_omega=5.0_hidden_omega=1.0_exclude_degrees=None")))
+# main(run_path = str(Path("C:/Users/jhonr/Documents/MGI_Thesis/Results/Runs_runtime/sirensh_LR=0.0005_mode=g_direct_BS=262144_lmax=5_layers=2_neurons=10_first_omega=5.0_hidden_omega=1.0_exclude_degrees=None")))

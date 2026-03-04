@@ -7,6 +7,7 @@ import pandas as pd
 from datetime import datetime
 import multiprocessing as mp
 import time
+from pathlib import Path
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
 from EGM2008_surface.location_encoder.coordinates_network import SH_SIREN, SH_LINEAR, MANDS2022, MANDS2022Scaler, Scaler
@@ -138,7 +139,8 @@ def main(run_path=None):
     else:
         raise ValueError(f"Unknown architecture '{arch}'. Expected 'sirensh', 'linearsh', or 'mands2022'.")
 
-    cache_path = os.path.join(base_dir, "data", "cache_test.npy")
+    #cache_path = os.path.join(base_dir, "data", "cache_test.npy")
+    cache_path = None
 
     if arch == "mands2022":
         model = ModelClass(
@@ -552,3 +554,5 @@ def main(run_path=None):
 if __name__ == "__main__":
     mp.freeze_support()
     main()
+
+# main(run_path = str(Path("C:/Users/jhonr/Documents/MGI_Thesis/Results/Runs_runtime/sirensh_LR=0.0005_mode=g_direct_BS=262144_lmax=5_layers=2_neurons=10_first_omega=5.0_hidden_omega=1.0_exclude_degrees=None")))

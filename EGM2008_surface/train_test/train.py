@@ -93,12 +93,12 @@ def main():
     print(f"Train samples: {len(train_df):,} | Val samples: {len(val_df):,}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    mode = "g_direct"
+    mode = "U"
     lr = 5e-3
     batch_size = 262144
-    lmax = 3
-    hidden_layers = 8
-    hidden_features = 291
+    lmax = 15
+    hidden_layers = 2
+    hidden_features = 20
     first_omega_0 = 20
     hidden_omega_0 = 1.0
     exclude_degrees = None
