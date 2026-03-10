@@ -42,9 +42,10 @@ The notebook performs the full workflow:
 
 1. Clones the current repository
 2. Installs the required packages
-3. Trains a **hybrid SIREN(SH) gravity field model** on the *LandOcean* dataset
-4. Trains a **numerical gravity field model**
-5. Generates maps visualizing the spatial distribution of the predictions
+3. Creates the required train and test datasets
+4. Trains a **hybrid SIREN(SH) gravity field model**
+5. Trains a **numerical gravity field model**
+6. Generates maps visualizing the spatial distribution of the predictions
 
 ## Status
 
