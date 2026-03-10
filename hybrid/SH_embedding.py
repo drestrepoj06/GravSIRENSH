@@ -1,4 +1,4 @@
-"""Creation of spherical harmonic basis functions with pyshtools and store them in cache
+"""Creation of spherical harmonic basis functions with pyshtools and store them in cache for training/test data
 jhonr"""
 
 import numpy as np
@@ -7,15 +7,17 @@ import multiprocessing as mp
 import os
 import torch
 
-
+# Derivation of SH basis functions using the pyshtools library
+# Creation of LUT tables for the datasets based on real SH expansions
+# If no cache path is specified, the basis functions are calculated on the fly, being slower
+# Inspired by the tutorials exposed in https://shtools.github.io/SHTOOLS/python-examples.html
 def _amp_worker(th_deg, lmax, normalization):
     ylm = pysh.expand.spharm(lmax, th_deg, 0.0, normalization=normalization, kind="real")
-    A_list = []
+    a_list = []
     for l in range(lmax + 1):
-        A_l = [ylm[0, l, m] for m in range(l + 1)]  # cos-branch m=0..l
-        A_list.extend(A_l)
-    return np.array(A_list, dtype=np.float32)
-
+        a_l = [ylm[0, l, m] for m in range(l + 1)]
+        a_list.extend(a_l)
+    return np.array(a_list, dtype=np.float32)
 
 class SHEmbedding:
     def __init__(self, lmax=10, normalization="4pi", cache_path=None,
@@ -26,12 +28,12 @@ class SHEmbedding:
         self.use_theta_lut = use_theta_lut
         if self.lmax == 0:
             self.use_theta_lut = False
-        if cache_path == None:
+        if cache_path is None:
             self.use_theta_lut = False
         self.n_theta = n_theta
         self.exclude_degrees = exclude_degrees or []
 
-        self.A_lut = None
+        self.a_lut = None
         self.theta_grid = None
 
     def _lut_paths(self):
@@ -43,10 +45,10 @@ class SHEmbedding:
         return lut_file, grid_file
 
     def build_theta_lut(self, force=False):
-        """Build a θ-LUT once: A_lut[n_theta, S_amp], theta_grid[n_theta]."""
+        """Build a θ-LUT once: a_lut[n_theta, S_amp], theta_grid[n_theta]."""
         lut_file, grid_file = self._lut_paths()
         if (not force) and os.path.exists(lut_file) and os.path.exists(grid_file):
-            self.A_lut = torch.from_numpy(np.load(lut_file)).float()
+            self.a_lut = torch.from_numpy(np.load(lut_file)).float()
             self.theta_grid = torch.from_numpy(np.load(grid_file)).float()
             return
 
@@ -59,27 +61,22 @@ class SHEmbedding:
                 _amp_worker,
                 [(thd, self.lmax, self.normalization) for thd in theta_deg]
             )
-        A_lut = np.vstack(results).astype(np.float32)
-        np.save(lut_file, A_lut)
+        a_lut = np.vstack(results).astype(np.float32)
+        np.save(lut_file, a_lut)
         np.save(grid_file, theta_grid.cpu().numpy())
 
-        self.A_lut = torch.from_numpy(A_lut).float()
+        self.a_lut = torch.from_numpy(a_lut).float()
         self.theta_grid = theta_grid.float()
 
     @torch.no_grad()
     def _prepare_lut(self, device):
-        if self.A_lut is None or self.theta_grid is None:
+        if self.a_lut is None or self.theta_grid is None:
             self.build_theta_lut()
-        self._A_lut_dev = self.A_lut.to(device, non_blocking=True)
+        self._a_lut_dev = self.a_lut.to(device, non_blocking=True)
         self._theta_grid_dev = self.theta_grid.to(device, non_blocking=True)
 
-    def _interp_A_theta(self, theta_rad):
-        """
-        Differentiable linear interpolation of A(theta) from θ-LUT.
-        theta_rad: (N,) radians in [0, π]
-        Returns A_batch: (N, S_amp)
-        """
-        A_lut = self._A_lut_dev
+    def _interp_a_theta(self, theta_rad):
+        a_lut = self._a_lut_dev
         grid = self._theta_grid_dev
 
         th = torch.clamp(theta_rad, 0.0, torch.pi - 1e-12)
@@ -96,15 +93,13 @@ class SHEmbedding:
 
         t = (th - th0) / denom
 
-        A0 = A_lut[idx_lo, :]
-        A1 = A_lut[idx_hi, :]
+        a0 = a_lut[idx_lo, :]
+        a1 = a_lut[idx_hi, :]
 
-        A = A0 + t.unsqueeze(1) * (A1 - A0)
-        return A
+        a = a0 + t.unsqueeze(1) * (a1 - a0)
+        return a
 
     def forward(self, lon, lat):
-        """
-        If use_theta_lut=True -> differentiableaa wrt lat via LUT interpolation."""
 
         lon = lon.float()
         lat = lat.float()
@@ -125,21 +120,21 @@ class SHEmbedding:
 
         if self.use_theta_lut:
             self._prepare_lut(device)
-            A_pack = self._interp_A_theta(theta)
+            a_pack = self._interp_a_theta(theta)
         else:
-            A_pack = self._amps_onthefly(theta, device=device)
+            a_pack = self._amps_onthefly(theta, device=device)
 
-        Y = self._assemble_torch(phi, A_pack, self.lmax)
-        return Y
+        y = self._assemble_torch(phi, a_pack, self.lmax)
+        return y
 
     def _amps_onthefly(self, theta_rad: torch.Tensor, device=None, chunk=4096):
         theta_deg = (theta_rad.detach().cpu().numpy() * 180.0 / np.pi).astype(np.float32)
-        N = int(theta_deg.shape[0])
-        S = (self.lmax + 1) * (self.lmax + 2) // 2
+        n = int(theta_deg.shape[0])
+        s = (self.lmax + 1) * (self.lmax + 2) // 2
 
-        out = np.empty((N, S), dtype=np.float32)
+        out = np.empty((n, s), dtype=np.float32)
 
-        for i in range(0, N, chunk):
+        for i in range(0, n, chunk):
             th = theta_deg[i:i + chunk]
             n = int(th.shape[0])
 
@@ -175,23 +170,23 @@ class SHEmbedding:
 
                 blocks.append(a)
 
-            A = np.concatenate(blocks, axis=1).astype(np.float32)  # (n, S)
-            out[i:i + n] = A
+            a = np.concatenate(blocks, axis=1).astype(np.float32)  # (n, S)
+            out[i:i + n] = a
 
-        A_t = torch.from_numpy(out).float()
+        a_t = torch.from_numpy(out).float()
         if device is not None:
-            A_t = A_t.to(device, non_blocking=True)
-        return A_t
+            a_t = a_t.to(device, non_blocking=True)
+        return a_t
 
-    def _assemble_torch(self, phi, A_pack, lmax):
+    def _assemble_torch(self, phi, a_pack, lmax):
         """
         Vectorized assembly of real spherical harmonics.
         """
         device = phi.device
-        N = A_pack.shape[0]
+        n = a_pack.shape[0]
 
         if self.exclude_degrees:
-            Y = torch.empty((N, (lmax + 1) ** 2), dtype=torch.float32, device=device)
+            y = torch.empty((n, (lmax + 1) ** 2), dtype=torch.float32, device=device)
 
             m_grid = torch.arange(lmax + 1, dtype=torch.float32, device=device)
             sin_mphi = torch.sin(phi[:, None] * m_grid[None, :])
@@ -204,48 +199,48 @@ class SHEmbedding:
                     amp_col += (l + 1)
                     continue
 
-                A_l = A_pack[:, amp_col:amp_col + (l + 1)]
+                a_l = a_pack[:, amp_col:amp_col + (l + 1)]
                 amp_col += (l + 1)
 
                 for m in range(l, 0, -1):
-                    Y[:, col] = A_l[:, m] * sin_mphi[:, int(m)]
+                    y[:, col] = a_l[:, m] * sin_mphi[:, int(m)]
                     col += 1
-                Y[:, col] = A_l[:, 0]
+                y[:, col] = a_l[:, 0]
                 col += 1
                 for m in range(1, l + 1):
-                    Y[:, col] = A_l[:, m] * cos_mphi[:, int(m)]
+                    y[:, col] = a_l[:, m] * cos_mphi[:, int(m)]
                     col += 1
 
-            Y = Y[:, :col]
-            return Y
+            y = y[:, :col]
+            return y
 
-        Y = torch.empty((N, (lmax + 1) ** 2), dtype=torch.float32, device=device)
+        y = torch.empty((n, (lmax + 1) ** 2), dtype=torch.float32, device=device)
 
         m_grid = torch.arange(lmax + 1, dtype=torch.float32, device=device)
-        sin_mphi = torch.sin(phi[:, None] * m_grid[None, :])  # (N, lmax+1)
-        cos_mphi = torch.cos(phi[:, None] * m_grid[None, :])  # (N, lmax+1)
+        sin_mphi = torch.sin(phi[:, None] * m_grid[None, :])
+        cos_mphi = torch.cos(phi[:, None] * m_grid[None, :])
 
         amp_col = 0
 
         for l in range(lmax + 1):
 
-            A_l = A_pack[:, amp_col:amp_col + (l + 1)]
+            a_l = a_pack[:, amp_col:amp_col + (l + 1)]
             amp_col += (l + 1)
 
             start = l * l
 
             if l > 0:
-                sin_amp = torch.flip(A_l[:, 1:], dims=[1])
+                sin_amp = torch.flip(a_l[:, 1:], dims=[1])
                 sin_trig = torch.flip(sin_mphi[:, 1:l + 1], dims=[1])
-                Y[:, start:start + l] = sin_amp * sin_trig
+                y[:, start:start + l] = sin_amp * sin_trig
 
-            Y[:, start + l] = A_l[:, 0]
+            y[:, start + l] = a_l[:, 0]
 
             if l > 0:
-                cos_amp = A_l[:, 1:]
+                cos_amp = a_l[:, 1:]
                 cos_trig = cos_mphi[:, 1:l + 1]
-                Y[:, start + l + 1:start + l + 1 + l] = cos_amp * cos_trig
+                y[:, start + l + 1:start + l + 1 + l] = cos_amp * cos_trig
 
-        return Y
+        return y
 
     __call__ = forward

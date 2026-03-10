@@ -1,0 +1,1 @@
+"""Implementation of the analytical model: linear SH expansion of pyshtools using the EGM2008 expand method"""

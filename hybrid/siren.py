@@ -1,17 +1,14 @@
-"""Implementation of SirenNET and LinearNet
+"""Implementation of Siren network
 jhonr"""
-
-# From https://github.com/vsitzmann/siren/blob/master/explore_siren.ipynb
 from torch import nn
 import torch
 import math
 
+# From https://github.com/vsitzmann/siren/blob/master/explore_siren.ipynb
 # See paper Sitzmann et al., (2020), sec. 3.2, final paragraph, and supplement Sec. 1.5 for discussion of omega_0.
-
 # If is_first=True, omega_0 is a frequency factor which simply multiplies the activations before the
 # nonlinearity. Different signals may require different omega_0 in the first layer - this is a
 # hyperparameter.
-    
 # If is_first=False, then the weights will be divided by omega_0 to keep the magnitude of
 # activations constant, but boost gradients to the weight matrix.
 
@@ -34,14 +31,15 @@ class SineLayer(nn.Module):
     def forward(self, x):
         return torch.sin(self.omega_0 * self.linear(x))
 
-class SIRENNet(nn.Module):
+class Siren(nn.Module):
     def __init__(self, in_features, hidden_features, hidden_layers, out_features,
-                 first_omega_0=30, hidden_omega_0=1.0, final_linear=True):
+                 first_omega_0=30, hidden_omega_0=1, final_linear=True):
         super().__init__()
-        layers = [SineLayer(in_features, hidden_features, is_first=True, omega_0=first_omega_0)]
+        layers: list[nn.Module] = [SineLayer(in_features, hidden_features, is_first=True, omega_0=first_omega_0)]
         for _ in range(hidden_layers):
             layers.append(SineLayer(hidden_features, hidden_features, omega_0=hidden_omega_0))
         if final_linear:
+            # Removed final linear weight uniform, compared to https://github.com/vsitzmann/siren/blob/master/explore_siren.ipynb
             layers.append(nn.Linear(hidden_features, out_features))
         else:
             layers.append(SineLayer(hidden_features, out_features, omega_0=hidden_omega_0))
@@ -49,48 +47,3 @@ class SIRENNet(nn.Module):
 
     def forward(self, x):
         return self.net(x)
-
-class LINEARNet(nn.Module):
-    def __init__(self, in_features, hidden_features, hidden_layers, out_features):
-        super().__init__()
-        layers = []
-
-        layers.append(nn.Linear(in_features, hidden_features))
-
-        for _ in range(hidden_layers):
-            layers.append(nn.Linear(hidden_features, hidden_features))
-
-        layers.append(nn.Linear(hidden_features, out_features))
-
-        self.model = nn.Sequential(*layers)
-
-    def forward(self, x):
-        return self.model(x)
-
-class GELUNet(nn.Module):
-    def __init__(self, in_features, hidden_features, hidden_layers, out_features):
-        super().__init__()
-        layers = []
-
-        layers.append(nn.Linear(in_features, hidden_features))
-        layers.append(nn.GELU())
-
-        for _ in range(hidden_layers - 1):
-            layers.append(nn.Linear(hidden_features, hidden_features))
-            layers.append(nn.GELU())
-
-        layers.append(nn.Linear(hidden_features, out_features))
-
-        self.model = nn.Sequential(*layers)
-
-        self.apply(self._init_weights)
-
-    @staticmethod
-    def _init_weights(m):
-        if isinstance(m, nn.Linear):
-            nn.init.xavier_uniform_(m.weight)
-            if m.bias is not None:
-                nn.init.zeros_(m.bias)
-
-    def forward(self, x):
-        return self.model(x)

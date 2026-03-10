@@ -1,5 +1,5 @@
 """Generate n random samples on the sphere that contain lon, lat, r, potential and acceleration from
-EGM2008. For train, n = 5 M. For test, n = 250 K distributed in a Fibonacci grid.
+EGM2008. For train, n = 5 M (train + validation) distributed uniformly in a equally spaced angular grid. For test, n = 250 K distributed in a Fibonacci grid.
 jhonr"""
 
 import os
@@ -42,6 +42,7 @@ class GravityDataGenerator:
         return scaled
 
     def _compute_fields(self):
+        # Based on the tutorials of https://shtools.github.io/SHTOOLS/python-examples.html
         clm_full = pysh.datasets.Earth.EGM2008(lmax=self.lmax_full)
         clm_low = pysh.datasets.Earth.EGM2008(lmax=self.lmax_base)
 
@@ -51,41 +52,41 @@ class GravityDataGenerator:
         deg_full = np.arange(self.lmax_full + 1)
         deg_low = np.arange(self.lmax_base + 1)
 
-        scale_U_full = (self.r0 / r1) ** deg_full
-        scale_U_low = (self.r0 / r1) ** deg_low
+        scale_u_full = (self.r0 / r1) ** deg_full
+        scale_u_low = (self.r0 / r1) ** deg_low
         scale_g_full = (self.r0 / r1) ** (deg_full + 2)
         scale_g_low = (self.r0 / r1) ** (deg_low + 2)
 
-        clm_full_U = self._scale_clm(clm_full, scale_U_full)
-        clm_low_U = self._scale_clm(clm_low, scale_U_low)
+        clm_full_u = self._scale_clm(clm_full, scale_u_full)
+        clm_low_u = self._scale_clm(clm_low, scale_u_low)
         clm_full_g = self._scale_clm(clm_full, scale_g_full)
         clm_low_g = self._scale_clm(clm_low, scale_g_low)
 
         res_full = clm_full_g.expand(lmax=self.lmax_full)
         res_low = clm_low_g.expand(lmax=self.lmax_full)
 
-        res_full_U = clm_full_U.expand(lmax=self.lmax_full)
-        res_low_U = clm_low_U.expand(lmax=self.lmax_full)
+        res_full_u = clm_full_u.expand(lmax=self.lmax_full)
+        res_low_u = clm_low_u.expand(lmax=self.lmax_full)
 
-        return res_full, res_low, res_full_U, res_low_U
+        return res_full, res_low, res_full_u, res_low_u
 
     def _sample_points(self, df):
 
         n = len(df)
-        N = self.n_samples
+        n_samples = self.n_samples
 
         if self.mode == "train":
             weights = np.abs(np.cos(np.radians(df["lat"].values)))
 
-            if n >= N:
-                return df.sample(n=N, weights=weights, random_state=42).reset_index(drop=True)
+            if n >= n_samples:
+                return df.sample(n=n_samples, weights=weights, random_state=42).reset_index(drop=True)
 
             df_all = df.copy()
-            df_extra = df.sample(n=(N - n), weights=weights, replace=True, random_state=42)
+            df_extra = df.sample(n=(n_samples - n), weights=weights, replace=True, random_state=42)
             return pd.concat([df_all, df_extra], ignore_index=True)
 
         elif self.mode == "test":
-            lat_fib, lon_fib, _ = self.fibonacci_spiral_sphere(N, self.r0)
+            lat_fib, lon_fib, _ = self.fibonacci_spiral_sphere(n_samples, self.r0)
 
             from scipy.spatial import cKDTree
             coords_grid = np.vstack((df["lat"].values, df["lon"].values)).T
@@ -96,11 +97,11 @@ class GravityDataGenerator:
 
             df_test = df.iloc[idx].reset_index(drop=True)
 
-            if len(df_test) < N:
-                df_extra = df_test.sample(n=(N - len(df_test)), replace=True, random_state=42)
+            if len(df_test) < n_samples:
+                df_extra = df_test.sample(n=(n_samples - len(df_test)), replace=True, random_state=42)
                 df_test = pd.concat([df_test, df_extra], ignore_index=True)
-            elif len(df_test) > N:
-                df_test = df_test.iloc[:N].reset_index(drop=True)
+            elif len(df_test) > n_samples:
+                df_test = df_test.iloc[:n_samples].reset_index(drop=True)
 
             return df_test
 
@@ -125,12 +126,12 @@ class GravityDataGenerator:
         return lat_deg, lon_deg, np.vstack((x, y, z)).T
 
     def generate(self):
-        res_full, res_low, res_full_U, res_low_U = self._compute_fields()
+        res_full, res_low, res_full_u, res_low_u = self._compute_fields()
         r0 = self.r0
 
-        pot_full = res_full_U.pot.data
-        pot_low = res_low_U.pot.data
-        dU = pot_full - pot_low
+        pot_full = res_full_u.pot.data
+        pot_low = res_low_u.pot.data
+        du = pot_full - pot_low
 
         gr_full = res_full.rad.data * 1e5
         gr_low = res_low.rad.data * 1e5
@@ -152,15 +153,15 @@ class GravityDataGenerator:
         df = pd.DataFrame({
             "lat": lat_grid.astype("float32"),
             "lon": lon_grid.astype("float32"),
-            "dU_m2_s2": dU.ravel().astype("float32"),
+            "dU_m2_s2": du.ravel().astype("float32"),
             "dg_r_mGal": dg_r.ravel().astype("float32"),
             "dg_theta_mGal": dg_theta.ravel().astype("float32"),
             "dg_phi_mGal": dg_phi.ravel().astype("float32"),
             "dg_total_mGal": dg_total.ravel().astype("float32"),
-            "radius_m": np.full(dU.size, r0, dtype="float32")
+            "radius_m": np.full(du.size, r0, dtype="float32")
         })
 
-        df = df[np.abs(df["lat"].values) < 89.9999].reset_index(drop=True)
+        df = df[np.abs(df["lat"].values) < 89.9999].reset_index(drop=True) # remove samples at exactly 90 degrees latitude
         df = self._sample_points(df)
         df.to_parquet(self.output_file, index=False)
         return df
@@ -182,17 +183,17 @@ def main():
         output_dir=data_dir,
         altitude=altitude
     )
-    df_train = generator_train.generate()
+    generator_train.generate()
 
     generator_test = GravityDataGenerator(
         lmax_full=lmax_full,
         lmax_base=lmax_base,
-        n_samples=250000,
+        n_samples=250000, # To generate the runtime dataset, change 250000 to 10000
         mode="test",
         output_dir=data_dir,
         altitude=altitude
     )
-    df_test = generator_test.generate()
+    generator_test.generate()
 
 if __name__ == "__main__":
     main()
