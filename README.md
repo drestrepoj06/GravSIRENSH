@@ -32,13 +32,19 @@ This repository includes:
 - **Data generators** for training datasets  
 - **Logging and visualization tools** for model training and evaluation  
 
-## Example
+## Getting started
 
-The file **`Examples.ipynb`** provides a minimal working example that:
+You can quickly test the repository using the following **Google Colab notebook**.
 
-1. Trains a **hybrid gravity field model**
-2. Trains a **numerical gravity field model**
-3. Visualizes the spatial distribution of the results
+[Open in Colab](LINK_TO_COLAB)
+
+The notebook performs the full workflow:
+
+1. Clones the current repository
+2. Installs the required packages
+3. Trains a **hybrid SIREN(SH) gravity field model** on the *LandOcean* dataset
+4. Trains a **numerical gravity field model**
+5. Generates maps visualizing the spatial distribution of the predictions
 
 ## Status
 
