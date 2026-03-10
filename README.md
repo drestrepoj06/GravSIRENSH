@@ -1,3 +1,5 @@
+![GravSIRENSH overview](doc/Figure_Front_page.png)
+
 # GravSIRENSH
 
 Repository for hybrid implicit neural representations of the gravity field that combine **Spherical Harmonic (SH) basis functions** with **SIREN networks** (Sitzmann et al., 2020).
