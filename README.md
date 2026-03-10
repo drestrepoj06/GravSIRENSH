@@ -1,4 +1,6 @@
-![GravSIRENSH overview](doc/Figure_Front_page.png)
+<p align="center">
+  <img src="doc/Figure_Front_page.png" width="700">
+</p>
 
 # GravSIRENSH
 
