@@ -46,6 +46,7 @@ The notebook performs the full workflow:
 4. Trains a **hybrid SIREN(SH) gravity field model**
 5. Trains a **numerical gravity field model**
 6. Generates maps visualizing the spatial distribution of the predictions
+7. Generates files for predictions and summary of the predictions 
 
 ## Status
 
