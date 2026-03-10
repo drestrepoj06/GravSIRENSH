@@ -9,9 +9,9 @@ The purpose of this repository is to train **hybrid** and **numerical** gravity 
 - The **numerical model** follows the approach of Martin and Schaub (2022).
 - It uses the standard mean squared error loss:
 
-\[
-Loss = \frac{1}{N}\sum_{i=1}^{N} \left|x_n - \hat{x}_n\right|^2
-\]
+$$
+Loss = \frac{1}{N}\sum_{i=1}^{N}\left|x_i-\hat{x}_i\right|^2
+$$
 
 where  
 - $\hat{x}$ represents the **predicted value**,  
