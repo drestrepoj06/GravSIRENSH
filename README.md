@@ -55,8 +55,13 @@ To clone the repository and install the requirements locally:
 ```bash
 git clone https://github.com/drestrepoj06/GravSIRENSH.git
 cd GravSIRENSH
-conda env create -f environment.yml
-conda activate gravsirensh
+python -m venv venv
+On Windows:
+source venv/Scripts/activate
+On Linux/macOS:
+source venv/bin/activate
+
+pip install -r requirements.txt
 pip install -e .
 ```
 
