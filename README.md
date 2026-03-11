@@ -43,10 +43,15 @@ The notebook performs the full workflow:
 1. Clones the current repository
 2. Installs the required packages
 3. Creates the required train and test datasets
-4. Trains a **hybrid SIREN(SH) gravity field model**
-5. Trains a **numerical gravity field model**
-6. Generates maps visualizing the spatial distribution of the predictions
-7. Generates files for predictions and summary of the predictions 
+4. Trains a **hybrid SIREN(SH) or numerical gravity field model**
+5. Provides the equivalent analytical model with the same number of parameters
+7. Generates maps visualizing the spatial distribution of the predictions
+8. Generates files for predictions and summary of the predictions
+
+## Working locally
+git clone https://github.com/joma5012/GravNN.git
+cd GravNN/
+pip install -e .
 
 ## Status
 
