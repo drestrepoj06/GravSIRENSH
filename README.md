@@ -55,7 +55,9 @@ To clone the repository and install the requirements locally:
 ```bash
 git clone https://github.com/drestrepoj06/GravSIRENSH.git
 cd GravSIRENSH
-pip install -e
+conda env create -f environment.yml
+conda activate gravsirensh
+pip install -e .
 ```
 
 ## Status
