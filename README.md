@@ -55,7 +55,8 @@ To clone the repository and install the requirements locally:
 ```bash
 git clone https://github.com/drestrepoj06/GravSIRENSH.git
 cd GravSIRENSH
-pip install -e .
+pip install -e
+```
 
 ## Status
 
