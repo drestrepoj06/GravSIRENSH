@@ -36,7 +36,7 @@ This repository includes:
 
 You can quickly test the repository using the following **Google Colab notebook**.
 
-[Open in Colab](LINK_TO_COLAB)
+[Open in Colab](https://colab.research.google.com/drive/16JEEL-VawhowQTXxNuYSiqGJrqQYjHfe?usp=sharing)
 
 The notebook performs the full workflow:
 
