@@ -66,15 +66,15 @@ class SplitDataset(pl.LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.batch_size,
-                          shuffle=True, num_workers=8,
+                          shuffle=True, num_workers=2,
                           pin_memory=torch.cuda.is_available(), persistent_workers=True)
 
     def val_dataloader(self):
         return DataLoader(self.val_dataset, batch_size=self.batch_size,
-                          shuffle=False, num_workers=8,
+                          shuffle=False, num_workers=2,
                           pin_memory=torch.cuda.is_available(), persistent_workers=True)
 
     def test_dataloader(self):
         return DataLoader(self.test_dataset, batch_size=self.batch_size,
-                          shuffle=False, num_workers=8,
+                          shuffle=False, num_workers=2,
                           pin_memory=torch.cuda.is_available(), persistent_workers=True)
