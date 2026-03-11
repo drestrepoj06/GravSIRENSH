@@ -36,17 +36,27 @@ This repository includes:
 
 You can quickly test the repository using the following **Google Colab notebook**.
 
-[Open in Colab](https://colab.research.google.com/drive/16JEEL-VawhowQTXxNuYSiqGJrqQYjHfe?usp=sharing)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/16JEEL-VawhowQTXxNuYSiqGJrqQYjHfe?usp=sharing)
 
 The notebook performs the full workflow:
 
 1. Clones the current repository
 2. Installs the required packages
 3. Creates the required train and test datasets
-4. Trains a **hybrid SIREN(SH) gravity field model**
-5. Trains a **numerical gravity field model**
-6. Generates maps visualizing the spatial distribution of the predictions
-7. Generates files for predictions and summary of the predictions 
+4. Trains a **hybrid SIREN(SH) or numerical gravity field model**
+5. Provides the equivalent analytical model with the same number of parameters
+7. Generates maps visualizing the spatial distribution of the predictions
+8. Generates files for predictions and summary of the predictions
+
+### Running the code
+
+To clone the repository and install the requirements locally:
+
+```bash
+git clone https://github.com/drestrepoj06/GravSIRENSH.git
+cd GravSIRENSH
+pip install -e
+```
 
 ## Status
 
