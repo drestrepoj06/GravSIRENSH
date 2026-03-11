@@ -1,4 +1,4 @@
-name: gravity_field
+name: gravsirensh
 channels:
   - pytorch
   - conda-forge

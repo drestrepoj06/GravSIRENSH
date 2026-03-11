@@ -66,7 +66,7 @@ class SplitDataset(pl.LightningDataModule):
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset, batch_size=self.batch_size,
-                          shuffle=True, num_workers=2,
+                          shuffle=True, num_workers=2, # Kept at 2 for Colab notebook. Better to use 8 instead
                           pin_memory=torch.cuda.is_available(), persistent_workers=True)
 
     def val_dataloader(self):
