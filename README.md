@@ -48,9 +48,13 @@ The notebook performs the full workflow:
 7. Generates maps visualizing the spatial distribution of the predictions
 8. Generates files for predictions and summary of the predictions
 
-## Working locally
-git clone https://github.com/joma5012/GravNN.git
-cd GravNN/
+### Running the code
+
+To clone the repository and install the requirements locally:
+
+```bash
+git clone https://github.com/drestrepoj06/GravSIRENSH.git
+cd GravSIRENSH
 pip install -e .
 
 ## Status
