@@ -1,5 +1,5 @@
 """Generate n random samples on the sphere that contain lon, lat, r, potential and acceleration from
-EGM2008. For train, n = 5 M (train + validation) distributed uniformly in a equally spaced angular grid. For test, n = 250 K distributed in a Fibonacci grid.
+EGM2008. For train, n = 5 M (train + validation) distributed uniformly in an equally spaced angular grid. For test, n = 250 K distributed in a Fibonacci grid.
 jhonr"""
 
 import os
@@ -188,7 +188,7 @@ def main():
     generator_test = GravityDataGenerator(
         lmax_full=lmax_full,
         lmax_base=lmax_base,
-        n_samples=250000, # To generate the runtime dataset, change 250000 to 10000
+        n_samples=250000,
         mode="test",
         output_dir=data_dir,
         altitude=altitude
