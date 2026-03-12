@@ -8,20 +8,30 @@ Repository for hybrid implicit neural representations of the gravity field that 
 
 ## Overview
 
-The purpose of this repository is to train **hybrid** and **numerical** gravity field models.
+This repository contains the code used to train **hybrid** and **numerical** gravity field models and compare their predictions with an **analytical** model based on Spherical Harmonics expansions.
 
-- The **numerical model** follows the approach of Martin and Schaub (2022).
-- It uses the standard mean squared error loss:
+- The **hybrid model** combines **Spherical Harmonics embeddings** with a **SIREN neural network**.
+
+<p align="center">
+  <img src="doc/Figure_experimental_setup_2D.png" width="700">
+</p>
+
+- The **numerical model** follows the approach proposed by **Martin and Schaub (2022)**.
+
+Both models are trained using the **mean squared error (MSE)** loss:
 
 $$
 Loss = \frac{1}{N}\sum_{i=1}^{N}\left|x_i-\hat{x}_i\right|^2
 $$
 
-where  
-- $\hat{x}$ represents the **predicted value**,  
-- $x$ represents the **true value**,  
+where
 
-and the target variable can correspond to either **gravitational potential** or **acceleration**.
+- $\hat{x}_i$ is the **predicted value**
+- $x_i$ is the **true value**
+
+The target variable can correspond to either **gravitational potential** or **gravitational acceleration**.
+
+
 
 ## Repository Contents
 
@@ -30,7 +40,14 @@ This repository includes:
 - **PyTorch implementations** of the hybrid and numerical models  
 - **Spherical Harmonic basis functions** implemented using `pyshtools`  
 - **Data generators** for training datasets  
-- **Logging and visualization tools** for model training and evaluation  
+- **Logging and visualization tools** for model training and evaluation
+
+## Data
+
+The datasets generated in this repository are publicly available on Zenodo:
+https://zenodo.org/records/18945729
+
+In the `generate_data.py` script, you can customize the **maximum spherical harmonic degree** and **number of samples** used to generate the training and test datasets.
 
 ## Getting started
 
@@ -42,11 +59,11 @@ The notebook performs the full workflow:
 
 1. Clones the current repository
 2. Installs the required packages
-3. Creates the required train and test datasets
+3. Downloads the training and test datasets from Zenodo
 4. Trains a **hybrid SIREN(SH) or numerical gravity field model**
 5. Provides the equivalent analytical model with the same number of parameters
-7. Generates maps visualizing the spatial distribution of the predictions
-8. Generates files for predictions and summary of the predictions
+6. Generates maps visualizing the spatial distribution of the predictions
+7. Generates files for predictions and summary of the predictions
 
 ### Running the code
 
