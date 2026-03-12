@@ -92,11 +92,11 @@ def main():
             mode=mode,lr=lr, run_dir = run_dir)
     datamodule = SplitDataset(train_df, val_df, test_df, scaler=scaler, mode=mode, batch_size=batch_size)
     pl.seed_everything(42, workers=True)
-    wandb_logger = WandbLogger(
-        project="siren",
-        name=run_name,
-        log_model=False
-    )
+    # wandb_logger = WandbLogger(
+    #     project="siren",
+    #     name=run_name,
+    #     log_model=False
+    # )
     checkpoint = ModelCheckpoint(
         monitor="val_loss",
         save_top_k=1,
@@ -112,7 +112,7 @@ def main():
         num_sanity_val_steps=0,
         gradient_clip_val=1.0,
         gradient_clip_algorithm="norm",
-        logger=wandb_logger,
+        # logger=wandb_logger, To activate the wandb logger flawlessly, change its waiting time
         inference_mode=False
     )
 
