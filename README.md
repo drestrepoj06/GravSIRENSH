@@ -41,6 +41,10 @@ This repository includes:
 - **Spherical Harmonic basis functions** implemented using `pyshtools`  
 - **Data generators** for training datasets  
 - **Logging and visualization tools** for model training and evaluation  
+## Data
+
+The datasets used in this repository are publicly available on Zenodo:
+https://zenodo.org/records/18945729
 
 ## Getting started
 
@@ -52,11 +56,11 @@ The notebook performs the full workflow:
 
 1. Clones the current repository
 2. Installs the required packages
-3. Creates the required train and test datasets
+3. Downloads the training and test datasets from Zenodo
 4. Trains a **hybrid SIREN(SH) or numerical gravity field model**
 5. Provides the equivalent analytical model with the same number of parameters
-7. Generates maps visualizing the spatial distribution of the predictions
-8. Generates files for predictions and summary of the predictions
+6. Generates maps visualizing the spatial distribution of the predictions
+7. Generates files for predictions and summary of the predictions
 
 ### Running the code
 
