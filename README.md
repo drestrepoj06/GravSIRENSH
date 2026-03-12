@@ -40,11 +40,14 @@ This repository includes:
 - **PyTorch implementations** of the hybrid and numerical models  
 - **Spherical Harmonic basis functions** implemented using `pyshtools`  
 - **Data generators** for training datasets  
-- **Logging and visualization tools** for model training and evaluation  
+- **Logging and visualization tools** for model training and evaluation
+
 ## Data
 
-The datasets used in this repository are publicly available on Zenodo:
+The datasets generated in this repository are publicly available on Zenodo:
 https://zenodo.org/records/18945729
+
+In the `generate_data.py` script, you can customize the **maximum spherical harmonic degree** and **number of samples** used to generate the training and test datasets.
 
 ## Getting started
 
