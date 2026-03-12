@@ -13,7 +13,7 @@ The purpose of this repository is to train **hybrid** and **numerical** gravity 
 - The **hybrid model** is a combination of Spherical Harmonics embeddings with a SIREN network
 
 <p align="center">
-  <img src="doc/Figure_experimental_setup_2D.png" width="500">
+  <img src="doc/Figure_experimental_setup_2D.png" width="700">
 </p
 
 - The **numerical model** follows the approach of Martin and Schaub (2022).
