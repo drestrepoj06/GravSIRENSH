@@ -201,9 +201,9 @@ class Hybrid(pl.LightningModule):
             # buffers for saving (numpy)
             self._pred_lon.append(lon.detach().cpu().numpy())
             self._pred_lat.append(lat.detach().cpu().numpy())
-            self._pred_true.append(yt.detach().cpu().numpy())  # (B,)
-            self._pred_pred.append(yp.detach().cpu().numpy())  # (B,)
-            self._pred_is_dist.append(m.detach().cpu().numpy())  # (B,)
+            self._pred_true.append(yt.detach().cpu().numpy())
+            self._pred_pred.append(yp.detach().cpu().numpy())
+            self._pred_is_dist.append(m.detach().cpu().numpy())
 
         else:
             yp_s = y_pred_scaled.detach()

@@ -46,7 +46,7 @@ class Analytical:
             "lmax": r"lmax=([0-9]+)",
             "hidden_layers": r"layers=([0-9]+)",
             "hidden_features": r"neurons=([0-9]+)",
-            "mode": r"mode=([^_]+(?:_[^_]+)?)",  # captures g or g_direct
+            "mode": r"mode=([^_]+(?:_[^_]+)?)",
         }
 
         for key, pattern in patterns.items():

@@ -62,7 +62,7 @@ class Scaler:
 
     def scale_potential(self, u):
         if self.u_min is None or self.u_max is None:
-            raise ValueError("MANDS2022Scaler not fitted for potential (U_min/U_max missing).")
+            raise ValueError("Scaler not fitted for potential (U_min/U_max missing).")
 
         denom = (self.u_max - self.u_min)
         if torch.is_tensor(u):
@@ -75,7 +75,7 @@ class Scaler:
 
     def unscale_potential(self, u_scaled):
         if self.u_min is None or self.u_max is None:
-            raise ValueError("MANDS2022Scaler not fitted for potential (U_min/U_max missing).")
+            raise ValueError("Scaler not fitted for potential (U_min/U_max missing).")
 
         denom = (self.u_max - self.u_min)
         if torch.is_tensor(u_scaled):
@@ -88,7 +88,7 @@ class Scaler:
 
     def scale_acceleration(self, a):
         if self.a_min is None or self.a_max is None:
-            raise ValueError("MANDS2022Scaler not fitted for accel (a_min/a_max missing).")
+            raise ValueError("Scaler not fitted for accel (a_min/a_max missing).")
 
         rng = (self.a_max - self.a_min)
         rng = np.where(np.abs(rng) < self.eps, 1.0, rng)
@@ -102,7 +102,7 @@ class Scaler:
 
     def unscale_acceleration(self, a_scaled):
         if self.a_min is None or self.a_max is None:
-            raise ValueError("MANDS2022Scaler not fitted for accel (a_min/a_max missing).")
+            raise ValueError("Scaler not fitted for accel (a_min/a_max missing).")
 
         rng = (self.a_max - self.a_min)
         rng = np.where(np.abs(rng) < self.eps, 1.0, rng)
@@ -214,11 +214,9 @@ class Numerical(pl.LightningModule):
     def test_step(self, batch, batch_idx):
         lon, lat, y_true_scaled, is_dist = batch
 
-        # forward once
         y_pred_scaled = self(lon, lat)
         y_true_scaled = y_true_scaled.to(y_pred_scaled.device)
 
-        # mask as torch bool on same device
         m = is_dist.to(y_pred_scaled.device).bool()
 
         if self.mode == "u":
@@ -242,21 +240,20 @@ class Numerical(pl.LightningModule):
             # buffers for saving (numpy)
             self._pred_lon.append(lon.detach().cpu().numpy())
             self._pred_lat.append(lat.detach().cpu().numpy())
-            self._pred_true.append(yt.detach().cpu().numpy())  # (B,)
-            self._pred_pred.append(yp.detach().cpu().numpy())  # (B,)
-            self._pred_is_dist.append(m.detach().cpu().numpy())  # (B,)
+            self._pred_true.append(yt.detach().cpu().numpy())
+            self._pred_pred.append(yp.detach().cpu().numpy())
+            self._pred_is_dist.append(m.detach().cpu().numpy())
 
         else:
-            # y_*_scaled: (B,3)
             yp_s = y_pred_scaled.detach()
             yt_s = y_true_scaled.detach()
 
-            yp = self.scaler.unscale_acceleration(yp_s)  # torch (B,3)
+            yp = self.scaler.unscale_acceleration(yp_s)
             yt = self.scaler.unscale_acceleration(yt_s)
 
-            e2 = (yp - yt) ** 2  # (B,3)
+            e2 = (yp - yt) ** 2
 
-            # per-component SSE, N counts samples
+
             self.test_sse[0] += e2[:, 0].sum().item()
             self.test_sse[1] += e2[:, 1].sum().item()
             self.test_sse[2] += e2[:, 2].sum().item()
@@ -272,8 +269,8 @@ class Numerical(pl.LightningModule):
             # buffers for saving (numpy)
             self._pred_lon.append(lon.detach().cpu().numpy())
             self._pred_lat.append(lat.detach().cpu().numpy())
-            self._pred_true.append(yt.detach().cpu().numpy())  # (B,3)
-            self._pred_pred.append(yp.detach().cpu().numpy())  # (B,3)
+            self._pred_true.append(yt.detach().cpu().numpy())
+            self._pred_pred.append(yp.detach().cpu().numpy())
             self._pred_is_dist.append(m.detach().cpu().numpy())
 
     def on_test_epoch_end(self):
