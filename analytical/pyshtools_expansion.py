@@ -162,7 +162,7 @@ class Analytical:
             (lats_grid, lons_grid), du_grid, bounds_error=False, fill_value=None
         )
         du = interp(np.column_stack((lat, lon))).astype("float32")
-        t0 = time.perf_counter()
+        t0 = time.perf_counter() ## Time only reported for acceleration, as pyshtools does not perform expansions for potential values
         a_full = clm_full.expand(lat=lat, lon=lon, r=r_f, lmax=l, degrees=True)
         t_full = time.perf_counter() - t0
         a_low = clm_low.expand(lat=lat, lon=lon, r=r_f, lmax=2, degrees=True)
