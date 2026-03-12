@@ -10,8 +10,14 @@ Repository for hybrid implicit neural representations of the gravity field that 
 
 The purpose of this repository is to train **hybrid** and **numerical** gravity field models.
 
+- The **hybrid model** is a combination of Spherical Harmonics embeddings with a SIREN network
+
+<p align="center">
+  <img src="doc/Figure_experimental_setup_2D.png" width="500">
+</p
+
 - The **numerical model** follows the approach of Martin and Schaub (2022).
-- It uses the standard mean squared error loss:
+Both use the standard mean squared error loss:
 
 $$
 Loss = \frac{1}{N}\sum_{i=1}^{N}\left|x_i-\hat{x}_i\right|^2
@@ -22,6 +28,8 @@ where
 - $x$ represents the **true value**,  
 
 and the target variable can correspond to either **gravitational potential** or **acceleration**.
+
+
 
 ## Repository Contents
 
