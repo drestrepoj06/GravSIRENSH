@@ -1,6 +1,3 @@
-<p align="center">
-  <img src="doc/Figure_Front_page.png" width="300">
-</p>
 
 # GravSIRENSH
 
